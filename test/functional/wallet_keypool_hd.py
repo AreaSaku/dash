@@ -15,10 +15,11 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 
 class KeyPoolTest(BitcoinTestFramework):
+    def add_options(self, parser):
+        self.add_wallet_options(parser)
 
     def set_test_params(self):
         self.num_nodes = 1
-        self.extra_args = [['-usehd=1']]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -70,7 +71,7 @@ class KeyPoolTest(BitcoinTestFramework):
         addr_data = nodes[0].getaddressinfo(addr)
         wallet_info = nodes[0].getwalletinfo()
 
-        # TODO: enable this assert after bitcoin#17681 is backported
+        # we don't have feature of replacing seed due to bitcoin#17681 is DNM, no need to check if masterfingerprint is changed
         # assert addr_before_encrypting_data['hdmasterfingerprint'] != addr_data['hdmasterfingerprint']
         if not self.options.descriptors:
             assert addr_data['hdchainid'] == wallet_info['hdchainid']
@@ -161,6 +162,20 @@ class KeyPoolTest(BitcoinTestFramework):
             assert_equal(wi['keypoolsize_hd_internal'], 100)
             assert_equal(wi['keypoolsize'], 100)
 
+        if not self.options.descriptors:
+            # Check that newkeypool entirely flushes the keypool
+            start_keypath = nodes[0].getaddressinfo(nodes[0].getnewaddress())['hdkeypath']
+            start_change_keypath = nodes[0].getaddressinfo(nodes[0].getrawchangeaddress())['hdkeypath']
+            # flush keypool and get new addresses
+            nodes[0].newkeypool()
+            end_keypath = nodes[0].getaddressinfo(nodes[0].getnewaddress())['hdkeypath']
+            end_change_keypath = nodes[0].getaddressinfo(nodes[0].getrawchangeaddress())['hdkeypath']
+            # The new keypath index should be 100 more than the old one
+            new_index = int(start_keypath.rsplit('/',  1)[1]) + 100
+            new_change_index = int(start_change_keypath.rsplit('/',  1)[1]) + 100
+            assert_equal(end_keypath, "m/44'/1'/0'/0/" + str(new_index))
+            assert_equal(end_change_keypath, "m/44'/1'/0'/1/" + str(new_change_index))
+
         # create a blank wallet
         nodes[0].createwallet(wallet_name='w2', blank=True, disable_private_keys=True)
         w2 = nodes[0].get_wallet_rpc('w2')
@@ -179,12 +194,12 @@ class KeyPoolTest(BitcoinTestFramework):
         w1.walletpassphrase('test', 100)
 
         res = w1.sendtoaddress(address=address, amount=0.00010000)
-        nodes[0].generate(1)
+        self.generate(nodes[0], 1)
         destination = addr.pop()
 
         # Using a fee rate (10 sat / byte) well above the minimum relay rate
         # creating a 5,000 sat transaction with change should not be possible
-        assert_raises_rpc_error(-4, "Transaction needs a change address, but we can't generate it. Please call keypoolrefill first.", w2.walletcreatefundedpsbt, inputs=[], outputs=[{addr.pop(): 0.00005000}], options={"subtractFeeFromOutputs": [0], "feeRate": 0.000010})
+        assert_raises_rpc_error(-4, "Transaction needs a change address, but we can't generate it.", w2.walletcreatefundedpsbt, inputs=[], outputs=[{addr.pop(): 0.00005000}], options={"subtractFeeFromOutputs": [0], "feeRate": 0.000010})
 
         # creating a 10,000 sat transaction without change, with a manual input, should still be possible
         res = w2.walletcreatefundedpsbt(inputs=w2.listunspent(), outputs=[{destination: 0.00010000}], options={"subtractFeeFromOutputs": [0], "feeRate": 0.000010})
@@ -202,13 +217,17 @@ class KeyPoolTest(BitcoinTestFramework):
         assert_equal("psbt" in res, True)
 
         # create a transaction without change at the maximum fee rate, such that the output is still spendable:
-        res = w2.walletcreatefundedpsbt(inputs=[], outputs=[{destination: 0.00010000}], options={"subtractFeeFromOutputs": [0], "feeRate": 0.00008824})
+        res = w2.walletcreatefundedpsbt(inputs=[], outputs=[{destination: 0.00010000}], options={"subtractFeeFromOutputs": [0], "feeRate": 0.00008822})
         assert_equal("psbt" in res, True)
         assert_equal(res["fee"], Decimal("0.00001694"))
 
         # creating a 10,000 sat transaction with a manual change address should be possible
         res = w2.walletcreatefundedpsbt(inputs=[], outputs=[{destination: 0.00010000}], options={"subtractFeeFromOutputs": [0], "feeRate": 0.000010, "changeAddress": addr.pop()})
         assert_equal("psbt" in res, True)
+
+        if not self.options.descriptors:
+            msg = "Error: Private keys are disabled for this wallet"
+            assert_raises_rpc_error(-4, msg, w2.keypoolrefill, 100)
 
 if __name__ == '__main__':
     KeyPoolTest().main()

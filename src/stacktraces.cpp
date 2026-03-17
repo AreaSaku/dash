@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -117,7 +117,7 @@ static std::string GetExeFileName()
 }
 
 static std::string g_exeFileName = GetExeFileName();
-static std::string g_exeFileBaseName = fs::path(g_exeFileName).filename().string();
+static std::string g_exeFileBaseName = fs::PathToString(fs::PathFromString(g_exeFileName).filename());
 
 #ifdef ENABLE_STACKTRACES
 static void my_backtrace_error_callback (void *data, const char *msg,
@@ -131,7 +131,7 @@ static backtrace_state* GetLibBacktraceState()
     // libbacktrace is not able to handle the DWARF debuglink in the .exe
     // but luckily we can just specify the .dbg file here as it's a valid PE/XCOFF file
     static std::string debugFileName = g_exeFileName + ".dbg";
-    static const char* exeFileNamePtr = fs::exists(debugFileName) ? debugFileName.c_str() : g_exeFileName.c_str();
+    static const char* exeFileNamePtr = fs::exists(fs::absolute(fs::PathFromString(debugFileName))) ? debugFileName.c_str() : g_exeFileName.c_str();
 #else
     static const char* exeFileNamePtr = g_exeFileName.empty() ? nullptr : g_exeFileName.c_str();
 #endif
@@ -146,6 +146,7 @@ static uint64_t GetBaseAddress()
     return 0;
 }
 
+#ifdef ENABLE_STACKTRACES
 // PC addresses returned by StackWalk64 are in the real mapped space, while libbacktrace expects them to be in the
 // default mapped space starting at 0x400000. This method converts the address.
 // TODO this is probably the same reason libbacktrace is not able to gather the stacktrace on Windows (returns pointers like 0x1 or 0xfffffff)
@@ -161,13 +162,14 @@ static uint64_t ConvertAddress(uint64_t addr)
     uint64_t offset = addr - hMod;
     return 0x400000 + offset;
 }
+#endif // ENABLE_STACKTRACES
 
 static __attribute__((noinline)) std::vector<uint64_t> GetStackFrames(size_t skip, size_t max_frames, const CONTEXT* pContext = nullptr)
 {
 #ifdef ENABLE_STACKTRACES
-    // We can't use libbacktrace for stack unwinding on Windows as it returns invalid addresses (like 0x1 or 0xffffffff)
-    static BOOL symInitialized = SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    volatile size_t skip_frames = skip;
 
+    // We can't use libbacktrace for stack unwinding on Windows as it returns invalid addresses (like 0x1 or 0xffffffff)
     // dbghelp is not thread safe
     static StdMutex m;
     StdLockGuard l(m);
@@ -205,7 +207,7 @@ static __attribute__((noinline)) std::vector<uint64_t> GetStackFrames(size_t ski
     stackframe.AddrStack.Offset = context.Rsp;
     stackframe.AddrStack.Mode = AddrModeFlat;
     if (!pContext) {
-        skip++; // skip this method
+        skip_frames = skip_frames + 1; // skip this method
     }
 #else
 #error unsupported architecture
@@ -223,7 +225,7 @@ static __attribute__((noinline)) std::vector<uint64_t> GetStackFrames(size_t ski
         if (!result) {
             break;
         }
-        if (i >= skip) {
+        if (i >= skip_frames) {
             uint64_t pc = ConvertAddress(stackframe.AddrPC.Offset);
             if (pc == 0) {
                 pc = stackframe.AddrPC.Offset;
@@ -426,13 +428,12 @@ std::string GetCrashInfoStrFromSerializedStr(const std::string& ciStr)
 {
     static uint64_t basePtr = GetBaseAddress();
 
-    bool dataInvalid = false;
-    auto buf = DecodeBase32(ciStr.c_str(), &dataInvalid);
-    if (buf.empty() || dataInvalid) {
+    auto opt_buf = DecodeBase32(ciStr);
+    if (!opt_buf.has_value() || opt_buf->empty()) {
         return "Error while deserializing crash info";
     }
 
-    CDataStream ds(buf, SER_DISK, 0);
+    CDataStream ds(*opt_buf, SER_DISK, 0);
 
     crash_info_header hdr;
     try {
@@ -470,7 +471,13 @@ std::string GetCrashInfoStrFromSerializedStr(const std::string& ciStr)
 
 static std::string GetCrashInfoStr(const crash_info& ci, size_t spaces)
 {
-    if (ci.stackframeInfos.empty()) {
+    // Check if we have any useful debug information at all
+    // libbacktrace may return stackframe_info entries but with empty filenames and functions
+    // when it can find the binary but can't resolve symbols
+    bool hasUsefulInfo = std::any_of(ci.stackframeInfos.begin(), ci.stackframeInfos.end(),
+                                     [](const auto& si) { return !si.filename.empty() || !si.function.empty(); });
+
+    if (!hasUsefulInfo) {
         return GetCrashInfoStrNoDebugInfo(ci);
     }
 
@@ -485,7 +492,7 @@ static std::string GetCrashInfoStr(const crash_info& ci, size_t spaces)
     for (const auto& si : ci.stackframeInfos) {
         std::string lstr;
         if (!si.filename.empty()) {
-            lstr += fs::path(si.filename).filename().string();
+            lstr += fs::PathToString(fs::PathFromString(si.filename).filename());
         } else {
             lstr += "<unknown-file>";
         }

@@ -9,7 +9,9 @@
 #include <crypto/muhash.h>
 #include <flatfile.h>
 #include <index/base.h>
-#include <node/coinstats.h>
+#include <kernel/coinstats.h>
+
+static constexpr bool DEFAULT_COINSTATSINDEX{false};
 
 /**
  * CoinStatsIndex maintains statistics on the UTXO set.
@@ -34,7 +36,9 @@ private:
     CAmount m_total_unspendables_scripts{0};
     CAmount m_total_unspendables_unclaimed_rewards{0};
 
-    bool ReverseBlock(const CBlock& block, const CBlockIndex* pindex);
+    [[nodiscard]] bool ReverseBlock(const CBlock& block, const CBlockIndex* pindex);
+
+    bool AllowPrune() const override { return true; }
 
 protected:
     bool Init() override;
@@ -54,7 +58,7 @@ public:
     explicit CoinStatsIndex(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
 
     // Look up stats for a specific block using CBlockIndex
-    bool LookUpStats(const CBlockIndex* block_index, CCoinsStats& coins_stats) const;
+    std::optional<kernel::CCoinsStats> LookUpStats(const CBlockIndex* block_index) const;
 };
 
 /// The global UTXO set hash object.

@@ -6,10 +6,16 @@
 #ifndef BITCOIN_QT_GUICONSTANTS_H
 #define BITCOIN_QT_GUICONSTANTS_H
 
+#include <chrono>
 #include <cstdint>
 
-/* Milliseconds between model updates */
-static const int MODEL_UPDATE_DELAY = 250;
+using namespace std::chrono_literals;
+
+/* A delay between model updates */
+static constexpr auto MODEL_UPDATE_DELAY{250ms};
+
+/* A delay between shutdown pollings */
+static constexpr auto SHUTDOWN_POLLING_DELAY{200ms};
 
 /* AskPassphraseDialog -- Maximum passphrase length */
 static const int MAX_PASSPHRASE_SIZE = 1024;
@@ -34,6 +40,9 @@ static const int TOOLTIP_WRAP_THRESHOLD = 80;
 
 /* Number of frames in spinner animation */
 #define SPINNER_FRAMES 90
+
+/* Duration of one full status-bar icon animation cycle in milliseconds. */
+static constexpr int STATUSBAR_ICON_CYCLE_MS{3600};
 
 #define QAPP_ORG_NAME "Dash"
 #define QAPP_ORG_DOMAIN "dash.org"

@@ -1,25 +1,21 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-
-#ifndef __cplusplus
-#error This header can only be compiled as C++.
-#endif
 
 #ifndef BITCOIN_PROTOCOL_H
 #define BITCOIN_PROTOCOL_H
 
 #include <netaddress.h>
-#include <primitives/transaction.h>
 #include <serialize.h>
 #include <streams.h>
 #include <uint256.h>
-#include <version.h>
+#include <util/time.h>
 
+#include <cstdint>
 #include <limits>
-#include <stdint.h>
 #include <string>
+#include <variant>
 
 /** Message header.
  * (4) message start.
@@ -138,7 +134,8 @@ extern const char* GETADDR;
 /**
  * The mempool message requests the TXIDs of transactions that the receiving
  * node has verified as valid but which have not yet appeared in a block.
- * @since protocol version 60002.
+ * @since protocol version 60002 as described by BIP35.
+ *   Only available with service bit NODE_BLOOM, see also BIP111.
  */
 extern const char* MEMPOOL;
 /**
@@ -251,6 +248,12 @@ extern const char* GETCFCHECKPT;
  * evenly spaced filter headers for blocks on the requested chain.
  */
 extern const char* CFCHECKPT;
+/**
+ * Contains a 4-byte version number and an 8-byte salt.
+ * The salt is used to compute short txids needed for efficient
+ * txreconciliation, as described by BIP 330.
+ */
+extern const char* SENDTXRCNCL;
 
 // Dash message types
 // NOTE: do NOT declare non-implmented here, we don't want them to be exposed to the outside
@@ -295,6 +298,7 @@ extern const char* SENDHEADERS2;
 extern const char* HEADERS2;
 extern const char* GETQUORUMROTATIONINFO;
 extern const char* QUORUMROTATIONINFO;
+extern const char* PLATFORMBAN;
 };
 
 /* Get a vector of all valid message types (see above) */
@@ -312,8 +316,6 @@ enum ServiceFlags : uint64_t {
     // set by all Dash Core non pruned nodes, and is unset by SPV clients or other light clients.
     NODE_NETWORK = (1 << 0),
     // NODE_BLOOM means the node is capable and willing to handle bloom-filtered connections.
-    // Dash Core nodes used to support this by default, without advertising this bit,
-    // but no longer do as of protocol version 70201 (= NO_BLOOM_VERSION)
     NODE_BLOOM = (1 << 2),
     // NODE_COMPACT_FILTERS means the node will service basic block filter requests.
     // See BIP157 and BIP158 for details on how this is implemented.
@@ -324,6 +326,9 @@ enum ServiceFlags : uint64_t {
     NODE_NETWORK_LIMITED = (1 << 10),
     // description will be provided
     NODE_HEADERS_COMPRESSED = (1 << 11),
+
+    // NODE_P2P_V2 means the node supports BIP324 transport
+    NODE_P2P_V2 = (1 << 12),
 
     // Bits 24-31 are reserved for temporary experiments. Just pick a bit that
     // isn't getting used, or one not being used much, and notify the
@@ -392,7 +397,7 @@ static inline bool MayHaveUsefulAddressDB(ServiceFlags services)
 /** A CService with information about it as peer */
 class CAddress : public CService
 {
-    static constexpr uint32_t TIME_INIT{100000000};
+    static constexpr std::chrono::seconds TIME_INIT{100000000};
 
     /** Historically, CAddress disk serialization stored the CLIENT_VERSION, optionally OR'ed with
      *  the ADDRV2_FORMAT flag to indicate V2 serialization. The first field has since been
@@ -422,7 +427,7 @@ class CAddress : public CService
 public:
     CAddress() : CService{} {};
     explicit CAddress(CService ipIn, ServiceFlags nServicesIn) : CService{ipIn}, nServices{nServicesIn} {};
-    CAddress(CService ipIn, ServiceFlags nServicesIn, uint32_t nTimeIn) : CService{ipIn}, nTime{nTimeIn}, nServices{nServicesIn} {};
+    CAddress(CService ipIn, ServiceFlags nServicesIn, NodeSeconds time) : CService{ipIn}, nTime{time}, nServices{nServicesIn} {};
 
     SERIALIZE_METHODS(CAddress, obj)
     {
@@ -455,8 +460,7 @@ public:
             use_v2 = s.GetVersion() & ADDRV2_FORMAT;
         }
 
-        SER_READ(obj, obj.nTime = TIME_INIT);
-        READWRITE(obj.nTime);
+        READWRITE(Using<LossyChronoFormatter<uint32_t>>(obj.nTime));
         // nServices is serialized as CompactSize in V2; as uint64_t in V1.
         if (use_v2) {
             uint64_t services_tmp;
@@ -471,8 +475,8 @@ public:
         SerReadWriteMany(os, ser_action, ReadWriteAsHelper<CService>(obj));
     }
 
-    //! Always included in serialization, except in the network format on INIT_PROTO_VERSION.
-    uint32_t nTime{TIME_INIT};
+    //! Always included in serialization. The behavior is unspecified if the value is not representable as uint32_t.
+    NodeSeconds nTime{TIME_INIT};
     //! Serialized as uint64_t in V1, and as CompactSize in V2.
     ServiceFlags nServices{NODE_NONE};
 
@@ -518,6 +522,8 @@ enum GetDataMsg : uint32_t {
     MSG_CLSIG = 29,
     /* MSG_ISLOCK = 30, */                            // Non-deterministic InstantSend and not used anymore
     MSG_ISDLOCK = 31,
+    MSG_DSQ = 32,
+    MSG_PLATFORM_BAN = 33,                            // Platform service ban (DIP-0031)
 };
 
 /** inv message data */
@@ -559,6 +565,5 @@ public:
     uint32_t type;
     uint256 hash;
 };
-
 
 #endif // BITCOIN_PROTOCOL_H

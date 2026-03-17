@@ -4,7 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Linux network utilities.
 
-Roughly based on http://voorloopnul.com/blog/a-python-netstat-in-less-than-100-lines-of-code/ by Ricardo Pascal
+Roughly based on https://web.archive.org/web/20190424172231/http://voorloopnul.com/blog/a-python-netstat-in-less-than-100-lines-of-code/ by Ricardo Pascal
 """
 
 import sys
@@ -12,7 +12,6 @@ import socket
 import struct
 import array
 import os
-from binascii import unhexlify
 
 # STATE_ESTABLISHED = '01'
 # STATE_SYN_SENT  = '02'
@@ -25,6 +24,11 @@ from binascii import unhexlify
 # STATE_LAST_ACK = '09'
 STATE_LISTEN = '0A'
 # STATE_CLOSING = '0B'
+
+# Address manager size constants as defined in addrman_impl.h
+ADDRMAN_NEW_BUCKET_COUNT = 1 << 10
+ADDRMAN_TRIED_BUCKET_COUNT = 1 << 8
+ADDRMAN_BUCKET_SIZE = 1 << 6
 
 def get_socket_inodes(pid):
     '''
@@ -44,7 +48,7 @@ def _remove_empty(array):
 def _convert_ip_port(array):
     host,port = array.split(':')
     # convert host from mangled-per-four-bytes form as used by kernel
-    host = unhexlify(host)
+    host = bytes.fromhex(host)
     host_out = ''
     for x in range(0, len(host) // 4):
         (val,) = struct.unpack('=I', host[x*4:(x+1)*4])
@@ -156,3 +160,12 @@ def test_ipv6_local():
     # except socket.error:
     #     have_ipv6 = False
     # return have_ipv6
+
+def test_unix_socket():
+    '''Return True if UNIX sockets are available on this platform.'''
+    try:
+        socket.AF_UNIX
+    except AttributeError:
+        return False
+    else:
+        return True

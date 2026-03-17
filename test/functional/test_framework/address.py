@@ -12,7 +12,6 @@
 import unittest
 
 from .script import hash160, hash256, CScript
-from .util import assert_equal, hex_str_to_bytes
 
 # Note unlike in bitcoin, this address isn't bech32 since we don't (at this time) support bech32.
 ADDRESS_BCRT1_UNSPENDABLE = 'yVg3NBUHNEhgDceqwVUjsZHreC5PBHnUo9'
@@ -20,22 +19,20 @@ ADDRESS_BCRT1_UNSPENDABLE_DESCRIPTOR = 'addr(yVg3NBUHNEhgDceqwVUjsZHreC5PBHnUo9)
 ADDRESS_BCRT1_P2SH_OP_TRUE = '8zJctvfrzGZ5s1zQ3kagwyW1DsPYSQ4V2P'
 
 
-chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+b58chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 
 
 def byte_to_base58(b, version):
     result = ''
-    str = b.hex()
-    str = chr(version).encode('latin-1').hex() + str
-    checksum = hash256(hex_str_to_bytes(str)).hex()
-    str += checksum[:8]
-    value = int('0x' + str, 0)
+    b = bytes([version]) + b  # prepend version
+    b += hash256(b)[:4]       # append checksum
+    value = int.from_bytes(b, 'big')
     while value > 0:
-        result = chars[value % 58] + result
+        result = b58chars[value % 58] + result
         value //= 58
-    while (str[:2] == '00'):
-        result = chars[0] + result
-        str = str[2:]
+    while b[0] == 0:
+        result = b58chars[0] + result
+        b = b[1:]
     return result
 
 
@@ -48,8 +45,8 @@ def base58_to_byte(s):
     n = 0
     for c in s:
         n *= 58
-        assert c in chars
-        digit = chars.index(c)
+        assert c in b58chars
+        digit = b58chars.index(c)
         n += digit
     h = '%x' % n
     if len(h) % 2:
@@ -57,14 +54,14 @@ def base58_to_byte(s):
     res = n.to_bytes((n.bit_length() + 7) // 8, 'big')
     pad = 0
     for c in s:
-        if c == chars[0]:
+        if c == b58chars[0]:
             pad += 1
         else:
             break
     res = b'\x00' * pad + res
 
-    # Assert if the checksum is invalid
-    assert_equal(hash256(res[:-4])[:4], res[-4:])
+    if hash256(res[:-4])[:4] != res[-4:]:
+        raise ValueError('Invalid Base58Check checksum')
 
     return res[1:-4], int(res[0])
 
@@ -89,14 +86,14 @@ def script_to_p2sh(script, main=False):
 
 def check_key(key):
     if (type(key) is str):
-        key = hex_str_to_bytes(key)  # Assuming this is hex string
+        key = bytes.fromhex(key)  # Assuming this is hex string
     if (type(key) is bytes and (len(key) == 33 or len(key) == 65)):
         return key
     assert False
 
 def check_script(script):
     if (type(script) is str):
-        script = hex_str_to_bytes(script)  # Assuming this is hex string
+        script = bytes.fromhex(script)  # Assuming this is hex string
     if (type(script) is bytes or type(script) is CScript):
         return script
     assert False

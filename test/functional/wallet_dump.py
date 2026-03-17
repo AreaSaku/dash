@@ -84,16 +84,19 @@ def read_dump(file_name, addrs, script_addrs, hd_master_addr_old):
 
 
 class WalletDumpTest(BitcoinTestFramework):
+    def add_options(self, parser):
+        self.add_wallet_options(parser, descriptors=False)
+
     def set_test_params(self):
         self.num_nodes = 1
-        self.extra_args = [["-keypool=90", "-usehd=1"]]
+        self.disable_mocktime = True
+        self.extra_args = [["-keypool=90"]]
         self.rpc_timeout = 120
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
 
     def setup_network(self):
-        self.disable_mocktime()
         self.add_nodes(self.num_nodes, extra_args=self.extra_args)
         self.start_nodes()
 
@@ -120,7 +123,7 @@ class WalletDumpTest(BitcoinTestFramework):
         self.log.info('Mine a block one second before the wallet is dumped')
         dump_time = int(time.time())
         self.nodes[0].setmocktime(dump_time - 1)
-        self.nodes[0].generate(1)
+        self.generate(self.nodes[0], 1)
         self.nodes[0].setmocktime(dump_time)
         dump_time_str = '# * Created on {}Z'.format(
             datetime.datetime.fromtimestamp(

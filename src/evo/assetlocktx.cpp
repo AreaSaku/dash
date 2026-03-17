@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2024 The Dash Core developers
+// Copyright (c) 2023-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,18 +6,22 @@
 #include <evo/specialtx.h>
 
 #include <llmq/commitment.h>
-#include <llmq/signing.h>
-#include <llmq/quorums.h>
+#include <llmq/quorumsman.h>
+#include <llmq/signhash.h>
 
 #include <chainparams.h>
 #include <consensus/params.h>
 #include <consensus/validation.h>
+#include <deploymentstatus.h>
 #include <logging.h>
+#include <node/blockstorage.h>
 #include <tinyformat.h>
 #include <util/ranges_set.h>
-#include <validation.h>
 
 #include <algorithm>
+
+using node::BlockManager;
+
 
 /**
  *  Common code for Asset Lock and Asset Unlock
@@ -113,13 +117,18 @@ bool CAssetUnlockPayload::VerifySig(const llmq::CQuorumManager& qman, const uint
     // and at the quorumHash must be active in either the current or previous quorum cycle
     // and the sig must validate against that specific quorumHash.
 
+
     Consensus::LLMQType llmqType = Params().GetConsensus().llmqTypePlatform;
 
-    // We check at most 2 quorums
-    const auto quorums = qman.ScanQuorums(llmqType, pindexTip, 2);
+    const auto& llmq_params_opt = Params().GetLLMQ(llmqType);
+    assert(llmq_params_opt.has_value());
+
+    // We check all active quorums + 1 the latest inactive
+    const int quorums_to_scan = llmq_params_opt->signingActiveQuorumCount + 1;
+    const auto quorums = qman.ScanQuorums(llmqType, pindexTip, quorums_to_scan);
 
     if (bool isActive = std::any_of(quorums.begin(), quorums.end(), [&](const auto &q) { return q->qc->quorumHash == quorumHash; }); !isActive) {
-        return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-assetunlock-not-active-quorum");
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-assetunlock-too-old-quorum");
     }
 
     if (static_cast<uint32_t>(pindexTip->nHeight) < requestedHeight || pindexTip->nHeight >= getHeightToExpiry()) {
@@ -129,12 +138,16 @@ bool CAssetUnlockPayload::VerifySig(const llmq::CQuorumManager& qman, const uint
     }
 
     const auto quorum = qman.GetQuorum(llmqType, quorumHash);
-    assert(quorum);
+    // quorum must be valid at this point. Let's check and throw error just in case
+    if (!quorum) {
+        LogPrintf("%s: ERROR! No quorum for credit pool found for hash=%s\n", __func__, quorumHash.ToString());
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-assetunlock-quorum-internal-error");
+    }
 
     const uint256 requestId = ::SerializeHash(std::make_pair(ASSETUNLOCK_REQUESTID_PREFIX, index));
 
-    if (const uint256 signHash = llmq::BuildSignHash(llmqType, quorum->qc->quorumHash, requestId, msgHash);
-            quorumSig.VerifyInsecure(quorum->qc->quorumPublicKey, signHash)) {
+    if (const llmq::SignHash signHash(llmqType, quorum->qc->quorumHash, requestId, msgHash);
+        quorumSig.VerifyInsecure(quorum->qc->quorumPublicKey, signHash.Get())) {
         return true;
     }
 
@@ -171,7 +184,7 @@ bool CheckAssetUnlockTx(const BlockManager& blockman, const llmq::CQuorumManager
         return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-assetunlock-duplicated-index");
     }
 
-    if (LOCK(cs_main); blockman.LookupBlockIndex(assetUnlockTx.getQuorumHash()) == nullptr) {
+    if (LOCK(::cs_main); blockman.LookupBlockIndex(assetUnlockTx.getQuorumHash()) == nullptr) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-assetunlock-quorum-hash");
     }
 

@@ -1,20 +1,35 @@
-// Copyright (c) 2020 The Bitcoin Core developers
+// Copyright (c) 2020-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_TEST_UTIL_NET_H
 #define BITCOIN_TEST_UTIL_NET_H
 
-#include <compat.h>
-#include <netaddress.h>
+#include <compat/compat.h>
 #include <net.h>
+#include <net_permissions.h>
+#include <net_processing.h>
+#include <netaddress.h>
+#include <node/connection_types.h>
+#include <node/eviction.h>
+#include <sync.h>
 #include <util/sock.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
+
+class FastRandomContext;
+
+template <typename C>
+class Span;
 
 struct ConnmanTestMsg : public CConnman {
     using CConnman::CConnman;
@@ -24,11 +39,20 @@ struct ConnmanTestMsg : public CConnman {
         m_peer_connect_timeout = timeout;
     }
 
+    std::vector<CNode*> TestNodes()
+    {
+        READ_LOCK(m_nodes_mutex);
+        return m_nodes;
+    }
+
     void AddTestNode(CNode& node)
     {
         LOCK(m_nodes_mutex);
         m_nodes.push_back(&node);
+
+        if (node.IsManualOrFullOutboundConn()) ++m_network_conn_counts[node.addr.GetNetwork()];
     }
+
     void ClearTestNodes()
     {
         LOCK(m_nodes_mutex);
@@ -41,15 +65,22 @@ struct ConnmanTestMsg : public CConnman {
     void Handshake(CNode& node,
                    bool successfully_connected,
                    ServiceFlags remote_services,
-                   NetPermissionFlags permission_flags,
+                   ServiceFlags local_services,
                    int32_t version,
-                   bool relay_txs);
+                   bool relay_txs)
+        EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex);
 
-    void ProcessMessagesOnce(CNode& node) { m_msgproc->ProcessMessages(&node, flagInterruptMsgProc); }
+    void ProcessMessagesOnce(CNode& node) EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) { m_msgproc->ProcessMessages(&node, flagInterruptMsgProc); }
 
     void NodeReceiveMsgBytes(CNode& node, Span<const uint8_t> msg_bytes, bool& complete) const;
 
-    bool ReceiveMsgFrom(CNode& node, CSerializedNetMsg& ser_msg) const;
+    bool ReceiveMsgFrom(CNode& node, CSerializedNetMsg&& ser_msg) const;
+    void FlushSendBuffer(CNode& node) const;
+
+    bool AlreadyConnectedPublic(const CAddress& addr) { return AlreadyConnectedToAddress(addr); };
+
+    CNode* ConnectNodePublic(PeerManager& peerman, const char* pszDest, ConnectionType conn_type)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
 };
 
 constexpr ServiceFlags ALL_SERVICE_FLAGS[]{
@@ -59,6 +90,7 @@ constexpr ServiceFlags ALL_SERVICE_FLAGS[]{
     NODE_COMPACT_FILTERS,
     NODE_NETWORK_LIMITED,
     NODE_HEADERS_COMPRESSED,
+    NODE_P2P_V2,
 };
 
 constexpr NetPermissionFlags ALL_NET_PERMISSION_FLAGS[]{
@@ -101,23 +133,18 @@ constexpr auto ALL_NETWORKS = std::array{
 class StaticContentsSock : public Sock
 {
 public:
-    explicit StaticContentsSock(const std::string& contents) : m_contents{contents}, m_consumed{0}
+    explicit StaticContentsSock(const std::string& contents) : m_contents{contents}
     {
         // Just a dummy number that is not INVALID_SOCKET.
         m_socket = INVALID_SOCKET - 1;
     }
 
-    ~StaticContentsSock() override { Reset(); }
+    ~StaticContentsSock() override { m_socket = INVALID_SOCKET; }
 
     StaticContentsSock& operator=(Sock&& other) override
     {
         assert(false && "Move of Sock into MockSock not allowed.");
         return *this;
-    }
-
-    void Reset() override
-    {
-        m_socket = INVALID_SOCKET;
     }
 
     ssize_t Send(const void*, size_t len, int) const override { return len; }
@@ -169,8 +196,13 @@ public:
         return 0;
     }
 
+    bool SetNonBlocking() const override { return true; }
+
+    bool IsSelectable(bool is_select) const override { return true; }
+
     bool Wait(std::chrono::milliseconds timeout,
               Event requested,
+              SocketEventsParams event_params,
               Event* occurred = nullptr) const override
     {
         if (occurred != nullptr) {
@@ -179,9 +211,20 @@ public:
         return true;
     }
 
+    bool WaitMany(std::chrono::milliseconds timeout,
+                  EventsPerSock& events_per_sock,
+                  SocketEventsParams event_params) const override
+    {
+        for (auto& [sock, events] : events_per_sock) {
+            (void)sock;
+            events.occurred = events.requested;
+        }
+        return true;
+    }
+
 private:
     const std::string m_contents;
-    mutable size_t m_consumed;
+    mutable size_t m_consumed{0};
 };
 
 std::vector<NodeEvictionCandidate> GetRandomNodeEvictionCandidates(int n_candidates, FastRandomContext& random_context);

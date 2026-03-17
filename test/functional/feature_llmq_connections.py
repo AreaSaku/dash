@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2023 The Dash Core developers
+# Copyright (c) 2015-2025 The Dash Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -12,12 +12,18 @@ Checks intra quorum connections
 
 import time
 
-from test_framework.test_framework import DashTestFramework
+from test_framework.test_framework import (
+    DashTestFramework,
+    MasternodeInfo,
+)
 from test_framework.util import assert_greater_than_or_equal
 
 class LLMQConnections(DashTestFramework):
+    def add_options(self, parser):
+        self.add_wallet_options(parser)
+
     def set_test_params(self):
-        self.set_dash_test_params(15, 14, fast_dip3_enforcement=True)
+        self.set_dash_test_params(15, 14)
         self.set_dash_llmq_test_params(5, 3)
         # Probes should age after this many seconds.
         # NOTE: mine_quorum() can bump mocktime quite often internally so make sure this number is high enough.
@@ -32,7 +38,7 @@ class LLMQConnections(DashTestFramework):
         self.log.info("checking for old intra quorum connections")
         total_count = 0
         for mn in self.get_quorum_masternodes(q):
-            count = self.get_mn_connection_count(mn.node)
+            count = self.get_mn_connection_count(mn.get_node(self))
             total_count += count
             assert_greater_than_or_equal(count, 2)
         assert total_count < 40
@@ -44,26 +50,26 @@ class LLMQConnections(DashTestFramework):
         self.wait_for_sporks_same()
 
         self.log.info("mining one block and waiting for all members to connect to each other")
-        self.nodes[0].generate(1)
+        self.generate(self.nodes[0], 1, sync_fun=self.no_op)
         for mn in self.get_quorum_masternodes(q):
-            self.wait_for_mnauth(mn.node, 4)
+            self.wait_for_mnauth(mn.get_node(self), 4)
 
         self.log.info("mine a new quorum and verify that all members connect to each other")
         q = self.mine_quorum()
 
         self.log.info("checking that all MNs got probed")
         for mn in self.get_quorum_masternodes(q):
-            self.wait_until(lambda: self.get_mn_probe_count(mn.node, q, False) == 4)
+            self.wait_until(lambda: self.get_mn_probe_count(mn.get_node(self), q, False) == 4)
 
         self.log.info("checking that probes age")
         self.bump_mocktime(self.MAX_AGE)
         for mn in self.get_quorum_masternodes(q):
-            self.wait_until(lambda: self.get_mn_probe_count(mn.node, q, False) == 0)
+            self.wait_until(lambda: self.get_mn_probe_count(mn.get_node(self), q, False) == 0)
 
         self.log.info("mine a new quorum and re-check probes")
         q = self.mine_quorum()
         for mn in self.get_quorum_masternodes(q):
-            self.wait_until(lambda: self.get_mn_probe_count(mn.node, q, True) == 4)
+            self.wait_until(lambda: self.get_mn_probe_count(mn.get_node(self), q, True) == 4)
 
         self.log.info("Activating SPORK_21_QUORUM_ALL_CONNECTED")
         self.nodes[0].sporkupdate("SPORK_21_QUORUM_ALL_CONNECTED", 0)
@@ -74,29 +80,21 @@ class LLMQConnections(DashTestFramework):
         self.nodes[0].sporkupdate("SPORK_23_QUORUM_POSE", 4070908800)
         self.wait_for_sporks_same()
 
-        self.activate_v19(expected_activation_height=900)
-        self.log.info("Activated v19 at height:" + str(self.nodes[0].getblockcount()))
-        self.move_to_next_cycle()
-        self.log.info("Cycle H height:" + str(self.nodes[0].getblockcount()))
-        self.move_to_next_cycle()
-        self.log.info("Cycle H+C height:" + str(self.nodes[0].getblockcount()))
-        self.move_to_next_cycle()
-        self.log.info("Cycle H+2C height:" + str(self.nodes[0].getblockcount()))
-        self.mine_cycle_quorum(llmq_type_name='llmq_test_dip0024', llmq_type=103)
+        self.mine_cycle_quorum()
 
         # Since we IS quorums are mined only using dip24 (rotation) we need to enable rotation, and continue tests on llmq_test_dip0024 for connections.
 
         self.log.info("check that old masternode connections are dropped")
         removed = False
-        for mn in self.mninfo:
-            if len(mn.node.quorum("memberof", mn.proTxHash)) > 0:
+        for mn in self.mninfo: # type: MasternodeInfo
+            if len(mn.get_node(self).quorum("memberof", mn.proTxHash)) > 0:
                 try:
-                    with mn.node.assert_debug_log(['removing masternodes quorum connections']):
-                        with mn.node.assert_debug_log(['keeping mn quorum connections']):
-                            self.mine_cycle_quorum(llmq_type_name='llmq_test_dip0024', llmq_type=103)
-                            mn.node.mockscheduler(60) # we check for old connections via the scheduler every 60 seconds
+                    with mn.get_node(self).assert_debug_log(['removing masternodes quorum connections']):
+                        with mn.get_node(self).assert_debug_log(['keeping mn quorum connections']):
+                            self.mine_cycle_quorum()
+                            mn.get_node(self).mockscheduler(60) # we check for old connections via the scheduler every 60 seconds
                     removed = True
-                except:
+                except Exception:
                     pass # it's ok to not remove connections sometimes
             if removed:
                 break
@@ -104,13 +102,13 @@ class LLMQConnections(DashTestFramework):
 
         self.log.info("check that inter-quorum masternode connections are added")
         added = False
-        for mn in self.mninfo:
-            if len(mn.node.quorum("memberof", mn.proTxHash)) > 0:
+        for mn in self.mninfo: # type: MasternodeInfo
+            if len(mn.get_node(self).quorum("memberof", mn.proTxHash)) > 0:
                 try:
-                    with mn.node.assert_debug_log(['adding mn inter-quorum connections']):
-                        self.mine_cycle_quorum(llmq_type_name='llmq_test_dip0024', llmq_type=103)
+                    with mn.get_node(self).assert_debug_log(['adding mn inter-quorum connections']):
+                        self.mine_cycle_quorum()
                     added = True
-                except:
+                except Exception:
                     pass # it's ok to not add connections sometimes
             if added:
                 break
@@ -118,18 +116,18 @@ class LLMQConnections(DashTestFramework):
 
     def check_reconnects(self, expected_connection_count):
         self.log.info("disable and re-enable networking on all masternodes")
-        for mn in self.mninfo:
-            mn.node.setnetworkactive(False)
-        for mn in self.mninfo:
-            self.wait_until(lambda: len(mn.node.getpeerinfo()) == 0)
-        for mn in self.mninfo:
-            mn.node.setnetworkactive(True)
+        for mn in self.mninfo: # type: MasternodeInfo
+            mn.get_node(self).setnetworkactive(False)
+        for mn in self.mninfo: # type: MasternodeInfo
+            self.wait_until(lambda: len(mn.get_node(self).getpeerinfo()) == 0)
+        for mn in self.mninfo: # type: MasternodeInfo
+            mn.get_node(self).setnetworkactive(True)
         self.bump_mocktime(60)
 
         self.log.info("verify that all masternodes re-connected")
         for q in self.nodes[0].quorum('list')['llmq_test']:
             for mn in self.get_quorum_masternodes(q):
-                self.wait_for_mnauth(mn.node, expected_connection_count)
+                self.wait_for_mnauth(mn.get_node(self), expected_connection_count)
 
         # Also re-connect non-masternode connections
         for i in range(1, len(self.nodes)):

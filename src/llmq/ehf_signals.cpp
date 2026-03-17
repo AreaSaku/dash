@@ -1,58 +1,43 @@
-// Copyright (c) 2023-2024 The Dash Core developers
+// Copyright (c) 2023-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <llmq/ehf_signals.h>
-#include <llmq/quorums.h>
-#include <llmq/signing_shares.h>
-#include <llmq/commitment.h>
-
-#include <evo/mnhftx.h>
-#include <evo/specialtx.h>
 
 #include <chainparams.h>
 #include <consensus/validation.h>
 #include <deploymentstatus.h>
+#include <evo/chainhelper.h>
+#include <evo/mnhftx.h>
 #include <index/txindex.h> // g_txindex
-#include <net_processing.h>
+#include <llmq/commitment.h>
+#include <llmq/quorumsman.h>
+#include <llmq/signing_shares.h>
 #include <primitives/transaction.h>
-#include <spork.h>
-#include <txmempool.h>
 #include <validation.h>
+#include <versionbits.h>
 
 namespace llmq {
-
-
-CEHFSignalsHandler::CEHFSignalsHandler(CChainState& chainstate, CMNHFManager& mnhfman, CSigningManager& sigman,
-                                       CSigSharesManager& shareman, CTxMemPool& mempool, const CQuorumManager& qman,
-                                       const CSporkManager& sporkman, const std::unique_ptr<PeerManager>& peerman) :
-    chainstate(chainstate),
-    mnhfman(mnhfman),
+CEHFSignalsHandler::CEHFSignalsHandler(ChainstateManager& chainman, CSigningManager& sigman,
+                                       CSigSharesManager& shareman, const CQuorumManager& qman) :
+    m_chainman(chainman),
     sigman(sigman),
     shareman(shareman),
-    mempool(mempool),
-    qman(qman),
-    sporkman(sporkman),
-    m_peerman(peerman)
+    qman(qman)
 {
     sigman.RegisterRecoveredSigsListener(this);
 }
-
 
 CEHFSignalsHandler::~CEHFSignalsHandler()
 {
     sigman.UnregisterRecoveredSigsListener(this);
 }
 
-void CEHFSignalsHandler::UpdatedBlockTip(const CBlockIndex* const pindexNew, bool is_masternode)
+void CEHFSignalsHandler::UpdatedBlockTip(const CBlockIndex* const pindexNew)
 {
     if (!DeploymentActiveAfter(pindexNew, Params().GetConsensus(), Consensus::DEPLOYMENT_V20)) return;
 
-    if (!is_masternode || (Params().IsTestChain() && !sporkman.IsSporkActive(SPORK_24_TEST_EHF))) {
-        return;
-    }
-
-    const auto ehfSignals = mnhfman.GetSignalsStage(pindexNew);
+    const auto ehfSignals = m_chainman.ActiveChainstate().ChainHelper().ehf_manager->GetSignalsStage(pindexNew);
     for (const auto& deployment : Params().GetConsensus().vDeployments) {
         // Skip deployments that do not use dip0023
         if (!deployment.useEHF) continue;
@@ -82,7 +67,7 @@ void CEHFSignalsHandler::trySignEHFSignal(int bit, const CBlockIndex* const pind
         return;
     }
 
-    const auto quorum = llmq::SelectQuorumForSigning(llmq_params_opt.value(), chainstate.m_chain, qman, requestId);
+    const auto quorum = llmq::SelectQuorumForSigning(llmq_params_opt.value(), m_chainman.ActiveChain(), qman, requestId);
     if (!quorum) {
         LogPrintf("CEHFSignalsHandler::trySignEHFSignal no quorum for id=%s\n", requestId.ToString());
         return;
@@ -93,10 +78,10 @@ void CEHFSignalsHandler::trySignEHFSignal(int bit, const CBlockIndex* const pind
     const uint256 msgHash = mnhfPayload.PrepareTx().GetHash();
 
     WITH_LOCK(cs, ids.insert(requestId));
-    sigman.AsyncSignIfMember(llmqType, shareman, requestId, msgHash, quorum->qc->quorumHash, false, true);
+    shareman.AsyncSignIfMember(llmqType, sigman, requestId, msgHash, quorum->qc->quorumHash, false, true);
 }
 
-void CEHFSignalsHandler::HandleNewRecoveredSig(const CRecoveredSig& recoveredSig)
+MessageProcessingResult CEHFSignalsHandler::HandleNewRecoveredSig(const CRecoveredSig& recoveredSig)
 {
     if (g_txindex) {
         g_txindex->BlockUntilSyncedToCurrentChain();
@@ -104,10 +89,12 @@ void CEHFSignalsHandler::HandleNewRecoveredSig(const CRecoveredSig& recoveredSig
 
     if (WITH_LOCK(cs, return ids.find(recoveredSig.getId()) == ids.end())) {
         // Do nothing, it's not for this handler
-        return;
+        return {};
     }
 
-    const auto ehfSignals = mnhfman.GetSignalsStage(WITH_LOCK(cs_main, return chainstate.m_chain.Tip()));
+    MessageProcessingResult ret;
+    const auto ehfSignals = m_chainman.ActiveChainstate().ChainHelper().ehf_manager->GetSignalsStage(
+        WITH_LOCK(::cs_main, return m_chainman.ActiveTip()));
     MNHFTxPayload mnhfPayload;
     for (const auto& deployment : Params().GetConsensus().vDeployments) {
         // skip deployments that do not use dip0023 or that have already been mined
@@ -129,15 +116,16 @@ void CEHFSignalsHandler::HandleNewRecoveredSig(const CRecoveredSig& recoveredSig
         {
             CTransactionRef tx_to_sent = MakeTransactionRef(std::move(tx));
             LogPrintf("CEHFSignalsHandler::HandleNewRecoveredSig Special EHF TX is created hash=%s\n", tx_to_sent->GetHash().ToString());
-            LOCK(cs_main);
-            const MempoolAcceptResult result = AcceptToMemoryPool(chainstate, mempool, tx_to_sent, /* bypass_limits */ false);
+            LOCK(::cs_main);
+            const MempoolAcceptResult result = m_chainman.ProcessTransaction(tx_to_sent);
             if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-                Assert(m_peerman)->RelayTransaction(tx_to_sent->GetHash());
+                ret.m_transactions.push_back(tx_to_sent->GetHash());
             } else {
                 LogPrintf("CEHFSignalsHandler::HandleNewRecoveredSig -- AcceptToMemoryPool failed: %s\n", result.m_state.ToString());
             }
         }
         break;
     }
+    return ret;
 }
 } // namespace llmq

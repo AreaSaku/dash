@@ -1,15 +1,16 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <util/moneystr.h>
 
-#include <amount.h>
+#include <consensus/amount.h>
 #include <tinyformat.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 
+#include <cstdint>
 #include <optional>
 
 std::string FormatMoney(const CAmount n)
@@ -33,14 +34,14 @@ std::string FormatMoney(const CAmount n)
         str.erase(str.size()-nTrim, nTrim);
 
     if (n < 0)
-        str.insert((unsigned int)0, 1, '-');
+        str.insert(uint32_t{0}, 1, '-');
     return str;
 }
 
 
 std::optional<CAmount> ParseMoney(const std::string& money_string)
 {
-    if (!ValidAsCString(money_string)) {
+    if (!ContainsNoNUL(money_string)) {
         return std::nullopt;
     }
     const std::string str = TrimString(money_string);

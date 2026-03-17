@@ -7,54 +7,59 @@
 NOTE: The test is designed to prevent cases when compatibility is broken accidentally.
 In case we need to break mempool compatibility we can continue to use the test by just bumping the version number.
 
-The previous release v0.15.0.0 is required by this test, see test/README.md.
+Previous releases are required by this test, see test/README.md.
 """
 
 import os
+import shutil
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.wallet import MiniWallet
 
 
 class MempoolCompatibilityTest(BitcoinTestFramework):
+    def add_options(self, parser):
+        self.add_wallet_options(parser)
+
     def set_test_params(self):
         self.num_nodes = 2
-        self.wallet_names = [None]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_previous_releases()
 
     def setup_network(self):
         self.add_nodes(self.num_nodes, versions=[
-            150000, # oldest version supported by the test framework
+            19030000,  # Last release with previous mempool format
             None,
         ])
         self.extra_args = [
             [],
             [],
         ]
+        # Delete v18.2.2 cached datadir to avoid making a legacy version try to
+        # make sense of our current database formats
+        shutil.rmtree(os.path.join(self.nodes[0].datadir, self.chain))
         self.start_nodes()
-        self.import_deterministic_coinbase_privkeys()
 
     def run_test(self):
         self.log.info("Test that mempool.dat is compatible between versions")
 
         old_node, new_node = self.nodes
+        assert "unbroadcastcount" not in old_node.getmempoolinfo()
         new_wallet = MiniWallet(new_node)
-        new_wallet.generate(1)
-        new_node.generate(100)
+        self.generate(new_wallet, 1, sync_fun=self.no_op)
+        self.generate(new_node, 100, sync_fun=self.no_op)
         # Sync the nodes to ensure old_node has the block that contains the coinbase that new_wallet will spend.
         # Otherwise, because coinbases are only valid in a block and not as loose txns, if the nodes aren't synced
         # unbroadcasted_tx won't pass old_node's `MemPoolAccept::PreChecks`.
         self.connect_nodes(0, 1)
         self.sync_blocks()
-        recipient = old_node.getnewaddress()
-        self.stop_node(1)
 
         self.log.info("Add a transaction to mempool on old node and shutdown")
-        old_tx_hash = old_node.sendtoaddress(recipient, 0.0001)
+        old_tx_hash = new_wallet.send_self_transfer(from_node=old_node)["txid"]
         assert old_tx_hash in old_node.getrawmempool()
         self.stop_node(0)
+        self.stop_node(1)
 
         self.log.info("Move mempool.dat from old to new node")
         old_node_mempool = os.path.join(old_node.datadir, self.chain, 'mempool.dat')
@@ -68,8 +73,7 @@ class MempoolCompatibilityTest(BitcoinTestFramework):
         self.log.info("Add unbroadcasted tx to mempool on new node and shutdown")
         unbroadcasted_tx_hash = new_wallet.send_self_transfer(from_node=new_node)['txid']
         assert unbroadcasted_tx_hash in new_node.getrawmempool()
-        mempool = new_node.getrawmempool(True)
-        assert mempool[unbroadcasted_tx_hash]['unbroadcast']
+        assert new_node.getmempoolentry(unbroadcasted_tx_hash)['unbroadcast']
         self.stop_node(1)
 
         self.log.info("Move mempool.dat from new to old node")

@@ -1,4 +1,4 @@
-// Copyright (c) 2012-2020 The Bitcoin Core developers
+// Copyright (c) 2012-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -17,7 +17,21 @@
 #include <utility>
 #include <vector>
 
-BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, TestingSetup)
+/**
+ * Identical to TestingSetup but excludes lock contention logging if
+ * `DEBUG_LOCKCONTENTION` is defined, as some of these tests are designed to be
+ * heavily contested to trigger race conditions or other issues.
+ */
+struct NoLockLoggingTestingSetup : public TestingSetup {
+    NoLockLoggingTestingSetup()
+#ifdef DEBUG_LOCKCONTENTION
+        : TestingSetup{CBaseChainParams::MAIN, /*extra_args=*/{"-debugexclude=lock"}} {}
+#else
+        : TestingSetup{CBaseChainParams::MAIN} {}
+#endif
+};
+
+BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, NoLockLoggingTestingSetup)
 
 static const unsigned int QUEUE_BATCH_SIZE = 128;
 static const int SCRIPT_CHECK_THREADS = 3;
@@ -80,7 +94,7 @@ struct MemoryCheck {
     {
         return true;
     }
-    MemoryCheck(){};
+    MemoryCheck() = default;
     MemoryCheck(const MemoryCheck& x)
     {
         // We have to do this to make sure that destructor calls are paired
@@ -114,7 +128,7 @@ struct FrozenCleanupCheck {
     {
         return true;
     }
-    FrozenCleanupCheck() {}
+    FrozenCleanupCheck() = default;
     ~FrozenCleanupCheck()
     {
         if (should_freeze) {
@@ -179,7 +193,7 @@ static void Correct_Queue_range(std::vector<size_t> range)
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct_Zero)
 {
     std::vector<size_t> range;
-    range.push_back((size_t)0);
+    range.push_back(size_t{0});
     Correct_Queue_range(range);
 }
 /** Test that 1 check is correct
@@ -187,7 +201,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct_Zero)
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct_One)
 {
     std::vector<size_t> range;
-    range.push_back((size_t)1);
+    range.push_back(size_t{1});
     Correct_Queue_range(range);
 }
 /** Test that MAX check is correct
@@ -370,6 +384,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueueControl_Locks)
     auto queue = std::make_unique<Standard_Queue>(QUEUE_BATCH_SIZE);
     {
         std::vector<std::thread> tg;
+        tg.reserve(3);
         std::atomic<int> nThreads {0};
         std::atomic<int> fails {0};
         for (size_t i = 0; i < 3; ++i) {

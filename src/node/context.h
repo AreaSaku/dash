@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2020 The Bitcoin Core developers
+// Copyright (c) 2019-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -16,32 +16,44 @@ class CActiveMasternodeManager;
 class AddrMan;
 class CBlockPolicyEstimator;
 class CConnman;
-class CCreditPoolManager;
 class CDeterministicMNManager;
+class CDSTXManager;
 class CChainstateHelper;
 class ChainstateManager;
 class CEvoDB;
 class CGovernanceManager;
+class CJWalletManager;
 class CMasternodeMetaMan;
 class CMasternodeSync;
 class CNetFulfilledRequestManager;
 class CScheduler;
 class CSporkManager;
 class CTxMemPool;
-class CMNHFManager;
+class NetGroupManager;
 class PeerManager;
-struct CJContext;
+struct ActiveContext;
 struct LLMQContext;
+
+namespace chainlock {
+class Chainlocks;
+class ChainlockHandler;
+} // namespace chainlock
 
 namespace interfaces {
 class Chain;
 class ChainClient;
+class Init;
 class WalletLoader;
 namespace CoinJoin {
 class Loader;
 } // namspace CoinJoin
 } // namespace interfaces
 
+namespace llmq {
+struct ObserverContext;
+} // namespace llmq
+
+namespace node {
 //! NodeContext struct containing references to chain state and connection
 //! state.
 //!
@@ -53,9 +65,12 @@ class Loader;
 //! any member functions. It should just be a collection of references that can
 //! be used without pulling in unwanted dependencies or functionality.
 struct NodeContext {
+    //! Init interface for initializing current process and connecting to other processes.
+    interfaces::Init* init{nullptr};
     std::unique_ptr<AddrMan> addrman;
     std::unique_ptr<CConnman> connman;
     std::unique_ptr<CTxMemPool> mempool;
+    std::unique_ptr<const NetGroupManager> netgroupman;
     std::unique_ptr<CBlockPolicyEstimator> fee_estimator;
     std::unique_ptr<PeerManager> peerman;
     std::unique_ptr<ChainstateManager> chainman;
@@ -70,20 +85,23 @@ struct NodeContext {
     std::unique_ptr<interfaces::CoinJoin::Loader> coinjoin_loader{nullptr};
     std::unique_ptr<CScheduler> scheduler;
     std::function<void()> rpc_interruption_point = [] {};
-    //! Dash
-    std::unique_ptr<CActiveMasternodeManager> mn_activeman;
-    std::unique_ptr<CCreditPoolManager> cpoolman;
+    //! Dash managers
+    std::unique_ptr<CJWalletManager> cj_walletman;
+    std::unique_ptr<CDSTXManager> dstxman;
     std::unique_ptr<CEvoDB> evodb;
     std::unique_ptr<CChainstateHelper> chain_helper;
     std::unique_ptr<CDeterministicMNManager> dmnman;
     std::unique_ptr<CGovernanceManager> govman;
-    std::unique_ptr<CJContext> cj_ctx;
     std::unique_ptr<CMasternodeMetaMan> mn_metaman;
     std::unique_ptr<CMasternodeSync> mn_sync;
-    std::unique_ptr<CMNHFManager> mnhf_manager;
     std::unique_ptr<CNetFulfilledRequestManager> netfulfilledman;
     std::unique_ptr<CSporkManager> sporkman;
+    std::unique_ptr<chainlock::Chainlocks> chainlocks;
+    std::unique_ptr<chainlock::ChainlockHandler> clhandler;
+    //! Dash contexts
+    std::unique_ptr<ActiveContext> active_ctx;
     std::unique_ptr<LLMQContext> llmq_ctx;
+    std::unique_ptr<llmq::ObserverContext> observer_ctx;
 
     //! Declare default constructor and destructor that are not inline, so code
     //! instantiating the NodeContext struct doesn't need to #include class
@@ -91,5 +109,6 @@ struct NodeContext {
     NodeContext();
     ~NodeContext();
 };
+} // namespace node
 
 #endif // BITCOIN_NODE_CONTEXT_H

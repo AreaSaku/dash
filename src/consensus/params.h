@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -14,8 +14,12 @@
 
 namespace Consensus {
 
-enum BuriedDeployment : int16_t
-{
+/**
+ * A buried deployment is one where the height of the activation has been hardcoded into
+ * the client implementation long after the consensus change has activated. See BIP 90.
+ */
+enum BuriedDeployment : int16_t {
+    // buried deployments get negative values to avoid overlap with DeploymentPos
     DEPLOYMENT_HEIGHTINCB = std::numeric_limits<int16_t>::min(),
     DEPLOYMENT_DERSIG,
     DEPLOYMENT_CLTV,
@@ -28,29 +32,30 @@ enum BuriedDeployment : int16_t
     DEPLOYMENT_DIP0024,
     DEPLOYMENT_BRR,
     DEPLOYMENT_V19,
+    DEPLOYMENT_V20,
+    DEPLOYMENT_MN_RR,
+    DEPLOYMENT_WITHDRAWALS,
 };
-constexpr bool ValidDeployment(BuriedDeployment dep) { return DEPLOYMENT_HEIGHTINCB <= dep && dep <= DEPLOYMENT_V19; }
+constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_WITHDRAWALS; }
 
-enum DeploymentPos : uint16_t
-{
+enum DeploymentPos : uint16_t {
     DEPLOYMENT_TESTDUMMY,
-    DEPLOYMENT_V20,     // Deployment of EHF, LLMQ Randomness Beacon
-    DEPLOYMENT_MN_RR,   // Deployment of Masternode Reward Location Reallocation
+    DEPLOYMENT_V24,         // Deployment of doubling withdrawal limit, extended addresses
     // NOTE: Also add new deployments to VersionBitsDeploymentInfo in deploymentinfo.cpp
     MAX_VERSION_BITS_DEPLOYMENTS
 };
-constexpr bool ValidDeployment(DeploymentPos dep) { return DEPLOYMENT_TESTDUMMY <= dep && dep <= DEPLOYMENT_MN_RR; }
+constexpr bool ValidDeployment(DeploymentPos dep) { return dep < MAX_VERSION_BITS_DEPLOYMENTS; }
 
 /**
  * Struct for each individual consensus rule change using BIP9.
  */
 struct BIP9Deployment {
     /** Bit position to select the particular bit in nVersion. */
-    int bit;
+    int bit{28};
     /** Start MedianTime for version bits miner confirmation. Can be a date in the past */
-    int64_t nStartTime;
+    int64_t nStartTime{NEVER_ACTIVE};
     /** Timeout/expiry MedianTime for the deployment attempt. */
-    int64_t nTimeout;
+    int64_t nTimeout{NEVER_ACTIVE};
     /** If lock in occurs, delay activation until at least this block
      *  height.  Note that activation will only occur on a retarget
      *  boundary.
@@ -93,7 +98,6 @@ struct Params {
     uint256 hashDevnetGenesisBlock;
     int nSubsidyHalvingInterval;
     /** Block height at which BIP16 becomes active */
-    int BIP16Height;
     int nMasternodePaymentsStartBlock;
     int nMasternodePaymentsIncreaseBlock;
     int nMasternodePaymentsIncreasePeriod; // in blocks
@@ -139,6 +143,12 @@ struct Params {
     int DIP0024QuorumsHeight;
     /** Block height at which V19 (Basic BLS and EvoNodes) becomes active */
     int V19Height;
+    /** Block height at which V20 (Deployment of EHF, LLMQ Randomness Beacon) becomes active */
+    int V20Height;
+    /** Block height at which MN_RR (Deployment of Masternode Reward Location Reallocation) becomes active */
+    int MN_RRHeight;
+    /** Block height at which WITHDRAWALS (Deployment of quorum fix and higher limits for withdrawals) becomes active */
+    int WithdrawalsHeight;
     /** Don't warn about unknown BIP 9 activations below this height.
      * This prevents us from warning about the CSV and DIP activations. */
     int MinBIP9WarningHeight;
@@ -161,7 +171,9 @@ struct Params {
     int nPowKGWHeight;
     int nPowDGWHeight;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
+    /** The best chain should have at least this much work */
     uint256 nMinimumChainWork;
+    /** By default assume that the signatures in ancestors of this block are valid */
     uint256 defaultAssumeValid;
 
     /** these parameters are only used on devnet and can be configured from the outside */
@@ -202,6 +214,12 @@ struct Params {
             return BRRHeight;
         case DEPLOYMENT_V19:
             return V19Height;
+        case DEPLOYMENT_V20:
+            return V20Height;
+        case DEPLOYMENT_MN_RR:
+            return MN_RRHeight;
+        case DEPLOYMENT_WITHDRAWALS:
+            return WithdrawalsHeight;
         } // no default case, so the compiler can warn about missing cases
         return std::numeric_limits<int>::max();
     }

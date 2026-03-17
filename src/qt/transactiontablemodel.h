@@ -75,6 +75,8 @@ public:
         StatusRole,
         /** Unprocessed icon */
         RawDecorationRole,
+        /** Output index within transaction (for UTXO identification) */
+        OutputIndexRole,
     };
 
     int rowCount(const QModelIndex &parent) const override;
@@ -93,8 +95,8 @@ private:
     std::unique_ptr<interfaces::Handler> m_handler_show_progress;
     QStringList columns;
     TransactionTablePriv *priv;
-    bool fProcessingQueuedTransactions;
-    int cachedChainLockHeight;
+    bool fProcessingQueuedTransactions{false};
+    int cachedChainLockHeight{-1};
 
     void subscribeToCoreSignals();
     void unsubscribeFromCoreSignals();
@@ -114,7 +116,7 @@ private:
 
 public Q_SLOTS:
     /* Refresh the whole wallet, helpful for huge notification queues */
-    void refreshWallet();
+    void refreshWallet(bool foce = false);
     /* New transaction, or transaction changed status */
     void updateTransaction(const QString &hash, int status, bool showTransaction);
     void updateAddressBook(const QString &address, const QString &label,

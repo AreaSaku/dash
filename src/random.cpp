@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -9,23 +9,22 @@
 #include <crypto/chacha20.h>
 #include <crypto/sha256.h>
 #include <crypto/sha512.h>
-#include <support/cleanse.h>
-#ifdef WIN32
-#include <compat.h> // for Windows API
-#include <wincrypt.h>
-#endif
-#include <logging.h>  // for LogPrintf()
+#include <logging.h>
 #include <randomenv.h>
-#include <support/allocators/secure.h>
 #include <span.h>
-#include <sync.h>     // for Mutex
-#include <util/time.h> // for GetTimeMicros()
+#include <support/allocators/secure.h>
+#include <support/cleanse.h>
+#include <sync.h>
+#include <util/time.h>
 
 #include <array>
-#include <stdlib.h>
+#include <cmath>
+#include <cstdlib>
 #include <thread>
 
-#ifndef WIN32
+#ifdef WIN32
+#include <bcrypt.h>
+#else
 #include <fcntl.h>
 #endif
 
@@ -33,14 +32,15 @@
 #include <sys/syscall.h>
 #include <linux/random.h>
 #endif
-#if defined(HAVE_GETENTROPY) || (defined(HAVE_GETENTROPY_RAND) && defined(MAC_OSX))
-#include <unistd.h>
-#endif
 #if defined(HAVE_GETENTROPY_RAND) && defined(MAC_OSX)
+#include <unistd.h>
 #include <sys/random.h>
 #endif
 #ifdef HAVE_SYSCTL_ARND
 #include <sys/sysctl.h>
+#endif
+#if defined(HAVE_STRONG_GETAUXVAL) && defined(__aarch64__)
+#include <sys/auxv.h>
 #endif
 
 [[noreturn]] static void RandFailure()
@@ -64,7 +64,7 @@ static inline int64_t GetPerformanceCounter() noexcept
     __asm__ volatile ("rdtsc" : "=a"(r1), "=d"(r2)); // Constrain r1 to rax and r2 to rdx.
     return (r2 << 32) | r1;
 #else
-    // Fall back to using C++11 clock (usually microsecond or nanosecond precision)
+    // Fall back to using standard library clock (usually microsecond or nanosecond precision)
     return std::chrono::high_resolution_clock::now().time_since_epoch().count();
 #endif
 }
@@ -177,6 +177,62 @@ static uint64_t GetRdSeed() noexcept
 #endif
 }
 
+#elif defined(__aarch64__) && defined(HWCAP2_RNG)
+
+static bool g_rndr_supported = false;
+
+static void InitHardwareRand()
+{
+    if (getauxval(AT_HWCAP2) & HWCAP2_RNG) {
+        g_rndr_supported = true;
+    }
+}
+
+static void ReportHardwareRand()
+{
+    // This must be done in a separate function, as InitHardwareRand() may be indirectly called
+    // from global constructors, before logging is initialized.
+    if (g_rndr_supported) {
+        LogPrintf("Using RNDR and RNDRRS as additional entropy sources\n");
+    }
+}
+
+/** Read 64 bits of entropy using rndr.
+ *
+ * Must only be called when RNDR is supported.
+ */
+static uint64_t GetRNDR() noexcept
+{
+    uint8_t ok;
+    uint64_t r1;
+    do {
+        // https://developer.arm.com/documentation/ddi0601/2022-12/AArch64-Registers/RNDR--Random-Number
+        __asm__ volatile("mrs %0, s3_3_c2_c4_0; cset %w1, ne;"
+                         : "=r"(r1), "=r"(ok)::"cc");
+        if (ok) break;
+        __asm__ volatile("yield");
+    } while (true);
+    return r1;
+}
+
+/** Read 64 bits of entropy using rndrrs.
+ *
+ * Must only be called when RNDRRS is supported.
+ */
+static uint64_t GetRNDRRS() noexcept
+{
+    uint8_t ok;
+    uint64_t r1;
+    do {
+        // https://developer.arm.com/documentation/ddi0601/2022-12/AArch64-Registers/RNDRRS--Reseeded-Random-Number
+        __asm__ volatile("mrs %0, s3_3_c2_c4_1; cset %w1, ne;"
+                         : "=r"(r1), "=r"(ok)::"cc");
+        if (ok) break;
+        __asm__ volatile("yield");
+    } while (true);
+    return r1;
+}
+
 #else
 /* Access to other hardware random number generators could be added here later,
  * assuming it is sufficiently fast (in the order of a few hundred CPU cycles).
@@ -192,6 +248,12 @@ static void SeedHardwareFast(CSHA512& hasher) noexcept {
 #if defined(__x86_64__) || defined(__amd64__) || defined(__i386__)
     if (g_rdrand_supported) {
         uint64_t out = GetRdRand();
+        hasher.Write((const unsigned char*)&out, sizeof(out));
+        return;
+    }
+#elif defined(__aarch64__) && defined(HWCAP2_RNG)
+    if (g_rndr_supported) {
+        uint64_t out = GetRNDR();
         hasher.Write((const unsigned char*)&out, sizeof(out));
         return;
     }
@@ -220,18 +282,26 @@ static void SeedHardwareSlow(CSHA512& hasher) noexcept {
         }
         return;
     }
+#elif defined(__aarch64__) && defined(HWCAP2_RNG)
+    if (g_rndr_supported) {
+        for (int i = 0; i < 4; ++i) {
+            uint64_t out = GetRNDRRS();
+            hasher.Write((const unsigned char*)&out, sizeof(out));
+        }
+        return;
+    }
 #endif
 }
 
 /** Use repeated SHA512 to strengthen the randomness in seed32, and feed into hasher. */
-static void Strengthen(const unsigned char (&seed)[32], int microseconds, CSHA512& hasher) noexcept
+static void Strengthen(const unsigned char (&seed)[32], SteadyClock::duration dur, CSHA512& hasher) noexcept
 {
     CSHA512 inner_hasher;
     inner_hasher.Write(seed, sizeof(seed));
 
     // Hash loop
     unsigned char buffer[64];
-    int64_t stop = GetTimeMicros() + microseconds;
+    const auto stop{SteadyClock::now() + dur};
     do {
         for (int i = 0; i < 1000; ++i) {
             inner_hasher.Finalize(buffer);
@@ -241,7 +311,7 @@ static void Strengthen(const unsigned char (&seed)[32], int microseconds, CSHA51
         // Benchmark operation and feed it into outer hasher.
         int64_t perf = GetPerformanceCounter();
         hasher.Write((const unsigned char*)&perf, sizeof(perf));
-    } while (GetTimeMicros() < stop);
+    } while (SteadyClock::now() < stop);
 
     // Produce output from inner state and feed it to outer hasher.
     inner_hasher.Finalize(buffer);
@@ -278,16 +348,15 @@ static void GetDevURandom(unsigned char *ent32)
 void GetOSRand(unsigned char *ent32)
 {
 #if defined(WIN32)
-    HCRYPTPROV hProvider;
-    int ret = CryptAcquireContextW(&hProvider, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT);
-    if (!ret) {
+    constexpr uint32_t STATUS_SUCCESS{0x00000000};
+    NTSTATUS status = BCryptGenRandom(/*hAlgorithm=*/NULL,
+                                      /*pbBuffer=*/ent32,
+                                      /*cbBuffer=*/NUM_OS_RANDOM_BYTES,
+                                      /*dwFlags=*/BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    if (status != STATUS_SUCCESS) {
         RandFailure();
     }
-    ret = CryptGenRandom(hProvider, NUM_OS_RANDOM_BYTES, ent32);
-    if (!ret) {
-        RandFailure();
-    }
-    CryptReleaseContext(hProvider, 0);
 #elif defined(HAVE_SYS_GETRANDOM)
     /* Linux. From the getrandom(2) man page:
      * "If the urandom source has been initialized, reads of up to 256 bytes
@@ -306,16 +375,14 @@ void GetOSRand(unsigned char *ent32)
             RandFailure();
         }
     }
-#elif defined(HAVE_GETENTROPY) && defined(__OpenBSD__)
-    /* On OpenBSD this can return up to 256 bytes of entropy, will return an
-     * error if more are requested.
-     * The call cannot return less than the requested number of bytes.
-       getentropy is explicitly limited to openbsd here, as a similar (but not
-       the same) function may exist on other platforms via glibc.
+#elif defined(__OpenBSD__)
+    /* OpenBSD. From the arc4random(3) man page:
+       "Use of these functions is encouraged for almost all random number
+        consumption because the other interfaces are deficient in either
+        quality, portability, standardization, or availability."
+       The function call is always successful.
      */
-    if (getentropy(ent32, NUM_OS_RANDOM_BYTES) != 0) {
-        RandFailure();
-    }
+    arc4random_buf(ent32, NUM_OS_RANDOM_BYTES);
     // Silence a compiler warning about unused function.
     (void)GetDevURandom;
 #elif defined(HAVE_GETENTROPY_RAND) && defined(MAC_OSX)
@@ -374,9 +441,7 @@ public:
         InitHardwareRand();
     }
 
-    ~RNGState()
-    {
-    }
+    ~RNGState() = default;
 
     void AddEvent(uint32_t event_info) noexcept EXCLUSIVE_LOCKS_REQUIRED(!m_events_mutex)
     {
@@ -444,7 +509,7 @@ public:
 
 RNGState& GetRNGState() noexcept
 {
-    // This C++11 idiom relies on the guarantee that static variable are initialized
+    // This idiom relies on the guarantee that static variable are initialized
     // on first call, even when multiple parallel calls are permitted.
     static std::vector<RNGState, secure_allocator<RNGState>> g_rng(1);
     return g_rng[0];
@@ -499,13 +564,13 @@ static void SeedSlow(CSHA512& hasher, RNGState& rng) noexcept
 }
 
 /** Extract entropy from rng, strengthen it, and feed it into hasher. */
-static void SeedStrengthen(CSHA512& hasher, RNGState& rng, int microseconds) noexcept
+static void SeedStrengthen(CSHA512& hasher, RNGState& rng, SteadyClock::duration dur) noexcept
 {
     // Generate 32 bytes of entropy from the RNG, and a copy of the entropy already in hasher.
     unsigned char strengthen_seed[32];
     rng.MixExtract(strengthen_seed, sizeof(strengthen_seed), CSHA512(hasher), false);
     // Strengthen the seed, and feed it into hasher.
-    Strengthen(strengthen_seed, microseconds, hasher);
+    Strengthen(strengthen_seed, dur, hasher);
 }
 
 static void SeedPeriodic(CSHA512& hasher, RNGState& rng) noexcept
@@ -525,7 +590,7 @@ static void SeedPeriodic(CSHA512& hasher, RNGState& rng) noexcept
     LogPrint(BCLog::RANDOM, "Feeding %i bytes of dynamic environment data into RNG\n", hasher.Size() - old_size);
 
     // Strengthen for 10 ms
-    SeedStrengthen(hasher, rng, 10000);
+    SeedStrengthen(hasher, rng, 10ms);
 }
 
 static void SeedStartup(CSHA512& hasher, RNGState& rng) noexcept
@@ -545,7 +610,7 @@ static void SeedStartup(CSHA512& hasher, RNGState& rng) noexcept
     LogPrint(BCLog::RANDOM, "Feeding %i bytes of environment data into RNG\n", hasher.Size() - old_size);
 
     // Strengthen for 100 ms
-    SeedStrengthen(hasher, rng, 100000);
+    SeedStrengthen(hasher, rng, 100ms);
 }
 
 enum class RNGLevel {
@@ -590,14 +655,9 @@ void RandAddEvent(const uint32_t event_info) noexcept { GetRNGState().AddEvent(e
 
 bool g_mock_deterministic_tests{false};
 
-uint64_t GetRand(uint64_t nMax) noexcept
+uint64_t GetRandInternal(uint64_t nMax) noexcept
 {
     return FastRandomContext(g_mock_deterministic_tests).randrange(nMax);
-}
-
-int GetRandInt(int nMax) noexcept
-{
-    return GetRand(nMax);
 }
 
 uint256 GetRandHash() noexcept
@@ -659,7 +719,7 @@ bool Random_SanityCheck()
      * GetOSRand() overwrites all 32 bytes of the output given a maximum
      * number of tries.
      */
-    static const ssize_t MAX_TRIES = 1024;
+    static constexpr int MAX_TRIES{1024};
     uint8_t data[NUM_OS_RANDOM_BYTES];
     bool overwritten[NUM_OS_RANDOM_BYTES] = {}; /* Tracks which bytes have been overwritten at least once */
     int num_overwritten;
@@ -723,4 +783,10 @@ void RandomInit()
     ProcRand(nullptr, 0, RNGLevel::FAST);
 
     ReportHardwareRand();
+}
+
+std::chrono::microseconds GetExponentialRand(std::chrono::microseconds now, std::chrono::seconds average_interval)
+{
+    double unscaled = -std::log1p(GetRand(uint64_t{1} << 48) * -0.0000000000000035527136788 /* -1/2^48 */);
+    return now + std::chrono::duration_cast<std::chrono::microseconds>(unscaled * average_interval + 0.5us);
 }

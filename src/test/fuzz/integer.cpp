@@ -1,10 +1,11 @@
-// Copyright (c) 2019-2020 The Bitcoin Core developers
+// Copyright (c) 2019-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <arith_uint256.h>
 #include <chainparams.h>
 #include <compressor.h>
+#include <consensus/amount.h>
 #include <consensus/merkle.h>
 #include <core_io.h>
 #include <crypto/common.h>
@@ -16,7 +17,6 @@
 #include <pow.h>
 #include <protocol.h>
 #include <pubkey.h>
-#include <rpc/util.h>
 #include <script/sign.h>
 #include <script/standard.h>
 #include <serialize.h>
@@ -46,7 +46,7 @@ void initialize_integer()
     SelectParams(CBaseChainParams::REGTEST);
 }
 
-FUZZ_TARGET_INIT(integer, initialize_integer)
+FUZZ_TARGET(integer, .init = initialize_integer)
 {
     if (buffer.size() < sizeof(uint256) + sizeof(uint160)) {
         return;
@@ -74,7 +74,6 @@ FUZZ_TARGET_INIT(integer, initialize_integer)
     static const uint256 u256_max(uint256S("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
     const std::vector<uint256> v256{u256, u256_min, u256_max};
     (void)ComputeMerkleRoot(v256);
-    (void)CountBits(u64);
     (void)DecompressAmount(u64);
     {
 
@@ -150,14 +149,6 @@ FUZZ_TARGET_INIT(integer, initialize_integer)
 
     const PKHash key_id{u160};
     const ScriptHash script_id{u160};
-    // CTxDestination = CNoDestination ∪ PKHash ∪ ScriptHash
-    const std::vector<CTxDestination> destinations{key_id, script_id};
-    for (const CTxDestination& destination : destinations) {
-        (void)DescribeAddress(destination);
-        (void)EncodeDestination(destination);
-        (void)GetScriptForDestination(destination);
-        (void)IsValidDestination(destination);
-    }
 
     {
         CDataStream stream(SER_NETWORK, INIT_PROTO_VERSION);

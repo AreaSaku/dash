@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -88,18 +88,18 @@ bool NetWhitebindPermissions::TryParse(const std::string& str, NetWhitebindPermi
     if (!TryParsePermissionFlags(str, flags, offset, error)) return false;
 
     const std::string strBind = str.substr(offset);
-    CService addrBind;
-    if (!Lookup(strBind, addrBind, 0, false)) {
+    const std::optional<CService> addrBind{Lookup(strBind, 0, false)};
+    if (!addrBind.has_value()) {
         error = ResolveErrMsg("whitebind", strBind);
         return false;
     }
-    if (addrBind.GetPort() == 0) {
+    if (addrBind.value().GetPort() == 0) {
         error = strprintf(_("Need to specify a port with -whitebind: '%s'"), strBind);
         return false;
     }
 
     output.m_flags = flags;
-    output.m_service = addrBind;
+    output.m_service = addrBind.value();
     error = Untranslated("");
     return true;
 }
@@ -111,8 +111,7 @@ bool NetWhitelistPermissions::TryParse(const std::string& str, NetWhitelistPermi
     if (!TryParsePermissionFlags(str, flags, offset, error)) return false;
 
     const std::string net = str.substr(offset);
-    CSubNet subnet;
-    LookupSubNet(net, subnet);
+    const CSubNet subnet{LookupSubNet(net)};
     if (!subnet.IsValid()) {
         error = strprintf(_("Invalid netmask specified in -whitelist: '%s'"), net);
         return false;

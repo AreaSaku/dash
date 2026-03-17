@@ -1,11 +1,9 @@
-// Copyright (c) 2019 The Bitcoin Core developers
+// Copyright (c) 2019-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_NET_TYPES_H
 #define BITCOIN_NET_TYPES_H
-
-#include <util/expected.h>
 
 #include <cstdint>
 #include <map>
@@ -42,6 +40,7 @@ public:
 };
 
 using banmap_t = std::map<CSubNet, CBanEntry>;
+using NodeId = int64_t;
 
 /**
  * Convert a `banmap_t` object to a JSON array.
@@ -59,22 +58,5 @@ UniValue BanMapToJson(const banmap_t& bans);
  * unparsable values.
  */
 void BanMapFromJson(const UniValue& bans_json, banmap_t& bans);
-
-struct MisbehavingError
-{
-    int score;
-    std::string message;
-
-    MisbehavingError(int s) : score{s} {}
-
-     // Constructor does a perfect forwarding reference
-    template <typename T>
-    MisbehavingError(int s, T&& msg) :
-        score{s},
-        message{std::forward<T>(msg)}
-    {}
-};
-
-using PeerMsgRet = tl::expected<void, MisbehavingError>;
 
 #endif // BITCOIN_NET_TYPES_H

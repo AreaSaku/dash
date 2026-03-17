@@ -8,6 +8,7 @@
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
+#include <test/fuzz/util/net.h>
 #include <util/readwritefile.h>
 #include <test/util/setup_common.h>
 #include <util/system.h>
@@ -39,16 +40,16 @@ static bool operator==(const CBanEntry& lhs, const CBanEntry& rhs)
            lhs.nBanUntil == rhs.nBanUntil;
 }
 
-FUZZ_TARGET_INIT(banman, initialize_banman)
+FUZZ_TARGET(banman, .init = initialize_banman)
 {
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     SetMockTime(ConsumeTime(fuzzed_data_provider));
-    fs::path banlist_file = GetDataDir() / "fuzzed_banlist";
+    fs::path banlist_file = gArgs.GetDataDirNet() / "fuzzed_banlist";
 
     const bool start_with_corrupted_banlist{fuzzed_data_provider.ConsumeBool()};
     bool force_read_and_write_to_err{false};
     if (start_with_corrupted_banlist) {
-        assert(WriteBinaryFile(banlist_file.string() + ".json",
+        assert(WriteBinaryFile(banlist_file + ".json",
                                fuzzed_data_provider.ConsumeRandomLengthString()));
     } else {
         force_read_and_write_to_err = fuzzed_data_provider.ConsumeBool();
@@ -58,7 +59,7 @@ FUZZ_TARGET_INIT(banman, initialize_banman)
     }
 
     {
-        BanMan ban_man{banlist_file, /* client_interface */ nullptr, /* default_ban_time */ ConsumeBanTimeOffset(fuzzed_data_provider)};
+        BanMan ban_man{banlist_file, /*client_interface=*/nullptr, /*default_ban_time=*/ConsumeBanTimeOffset(fuzzed_data_provider)};
         // The complexity is O(N^2), where N is the input size, because each call
         // might call DumpBanlist (or other methods that are at least linear
         // complexity of the input size).
@@ -105,11 +106,11 @@ FUZZ_TARGET_INIT(banman, initialize_banman)
             SetMockTime(ConsumeTime(fuzzed_data_provider));
             banmap_t banmap;
             ban_man.GetBanned(banmap);
-            BanMan ban_man_read{banlist_file, /* client_interface */ nullptr, /* default_ban_time */ 0};
+            BanMan ban_man_read{banlist_file, /*client_interface=*/nullptr, /*default_ban_time=*/0};
             banmap_t banmap_read;
             ban_man_read.GetBanned(banmap_read);
             assert(banmap == banmap_read);
         }
     }
-    fs::remove(banlist_file.string() + ".json");
+    fs::remove(fs::PathToString(banlist_file + ".json"));
 }

@@ -54,6 +54,8 @@ class QLocalServer;
 class QUrl;
 QT_END_NAMESPACE
 
+extern const QString BITCOIN_IPC_PREFIX;
+
 class PaymentServer : public QObject
 {
     Q_OBJECT
@@ -101,9 +103,9 @@ protected:
     bool eventFilter(QObject *object, QEvent *event) override;
 
 private:
-    bool saveURIs;                      // true during startup
-    QLocalServer* uriServer;
-    OptionsModel *optionsModel;
+    bool saveURIs{true}; // true during startup
+    QLocalServer* uriServer{nullptr};
+    OptionsModel* optionsModel{nullptr};
 };
 
 #endif // BITCOIN_QT_PAYMENTSERVER_H

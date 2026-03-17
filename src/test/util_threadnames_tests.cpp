@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020 The Bitcoin Core developers
+// Copyright (c) 2018-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,10 +10,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-#if defined(HAVE_CONFIG_H)
-#include <config/bitcoin-config.h>
-#endif
 
 #include <boost/test/unit_test.hpp>
 
@@ -53,11 +49,6 @@ std::set<std::string> RenameEnMasse(int num_threads)
  */
 BOOST_AUTO_TEST_CASE(util_threadnames_test_rename_threaded)
 {
-#if !defined(HAVE_THREAD_LOCAL)
-    // This test doesn't apply to platforms where we don't have thread_local.
-    return;
-#endif
-
     std::set<std::string> names = RenameEnMasse(100);
 
     BOOST_CHECK_EQUAL(names.size(), 100U);

@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -48,6 +48,7 @@ MAKE_MSG(GETCFHEADERS, "getcfheaders");
 MAKE_MSG(CFHEADERS, "cfheaders");
 MAKE_MSG(GETCFCHECKPT, "getcfcheckpt");
 MAKE_MSG(CFCHECKPT, "cfcheckpt");
+MAKE_MSG(SENDTXRCNCL, "sendtxrcncl");
 // Dash message types
 MAKE_MSG(SPORK, "spork");
 MAKE_MSG(GETSPORKS, "getsporks");
@@ -89,6 +90,7 @@ MAKE_MSG(SENDHEADERS2, "sendheaders2");
 MAKE_MSG(HEADERS2, "headers2");
 MAKE_MSG(GETQUORUMROTATIONINFO, "getqrinfo");
 MAKE_MSG(QUORUMROTATIONINFO, "qrinfo");
+MAKE_MSG(PLATFORMBAN, "platformban");
 }; // namespace NetMsgType
 
 /** All known message types. Keep this in the same order as the list of
@@ -127,6 +129,7 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::CFHEADERS,
     NetMsgType::GETCFCHECKPT,
     NetMsgType::CFCHECKPT,
+    NetMsgType::SENDTXRCNCL,
     // Dash message types
     // NOTE: do NOT include non-implmented here, we want them to be "Unknown command" in ProcessMessage()
     NetMsgType::SPORK,
@@ -166,7 +169,11 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::MNAUTH,
     NetMsgType::GETHEADERS2,
     NetMsgType::SENDHEADERS2,
-    NetMsgType::HEADERS2};
+    NetMsgType::HEADERS2,
+    NetMsgType::GETQUORUMROTATIONINFO,
+    NetMsgType::QUORUMROTATIONINFO,
+    NetMsgType::PLATFORMBAN,
+};
 const static std::vector<std::string> allNetMessageTypesVec(std::begin(allNetMessageTypes), std::end(allNetMessageTypes));
 
 /** Message types that are not allowed by blocks-relay-only policy.
@@ -184,6 +191,8 @@ const static std::string netMessageTypesViolateBlocksOnly[] = {
     NetMsgType::DSSTATUSUPDATE,
     NetMsgType::DSTX,
     NetMsgType::DSVIN,
+    NetMsgType::GETQUORUMROTATIONINFO,
+    NetMsgType::PLATFORMBAN,
     NetMsgType::QBSIGSHARES,
     NetMsgType::QCOMPLAINT,
     NetMsgType::QCONTRIB,
@@ -197,6 +206,7 @@ const static std::string netMessageTypesViolateBlocksOnly[] = {
     NetMsgType::QSIGSESANN,
     NetMsgType::QSIGSHARE,
     NetMsgType::QSIGSHARESINV,
+    NetMsgType::QUORUMROTATIONINFO,
     NetMsgType::QWATCH,
     NetMsgType::TX,
 };
@@ -288,6 +298,8 @@ const char* CInv::GetCommandInternal() const
         case MSG_QUORUM_RECOVERED_SIG:          return NetMsgType::QSIGREC;
         case MSG_CLSIG:                         return NetMsgType::CLSIG;
         case MSG_ISDLOCK:                       return NetMsgType::ISDLOCK;
+        case MSG_DSQ:                           return NetMsgType::DSQUEUE;
+        case MSG_PLATFORM_BAN:                  return NetMsgType::PLATFORMBAN;
         default:
             return nullptr;
     }
@@ -337,6 +349,7 @@ static std::string serviceFlagToStr(size_t bit)
     case NODE_COMPACT_FILTERS: return "COMPACT_FILTERS";
     case NODE_NETWORK_LIMITED: return "NETWORK_LIMITED";
     case NODE_HEADERS_COMPRESSED: return "HEADERS_COMPRESSED";
+    case NODE_P2P_V2:          return "P2P_V2";
     // Not using default, so we get warned when a case is missing
     }
 

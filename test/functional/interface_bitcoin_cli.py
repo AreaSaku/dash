@@ -66,18 +66,19 @@ def cli_get_info_string_to_dict(cli_get_info_string):
 
 
 class TestBitcoinCli(BitcoinTestFramework):
+    def add_options(self, parser):
+        self.add_wallet_options(parser)
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
-        if self.is_wallet_compiled():
-            self.requires_wallet = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_cli()
 
     def run_test(self):
         """Main test logic"""
-        self.nodes[0].generate(BLOCKS)
+        self.generate(self.nodes[0], BLOCKS)
 
         self.log.info("Compare responses from getblockchaininfo RPC and `dash-cli getblockchaininfo`")
         cli_response = self.nodes[0].cli.getblockchaininfo()
@@ -96,12 +97,12 @@ class TestBitcoinCli(BitcoinTestFramework):
         user, password = get_auth_cookie(self.nodes[0].datadir, self.chain)
 
         self.log.info("Test -stdinrpcpass option")
-        assert_equal(BLOCKS, self.nodes[0].cli('-rpcuser={}'.format(user), '-stdinrpcpass', input=password).getblockcount())
-        assert_raises_process_error(1, 'Incorrect rpcuser or rpcpassword', self.nodes[0].cli('-rpcuser={}'.format(user), '-stdinrpcpass', input='foo').echo)
+        assert_equal(BLOCKS, self.nodes[0].cli(f'-rpcuser={user}', '-stdinrpcpass', input=password).getblockcount())
+        assert_raises_process_error(1, 'Incorrect rpcuser or rpcpassword', self.nodes[0].cli(f'-rpcuser={user}', '-stdinrpcpass', input='foo').echo)
 
         self.log.info("Test -stdin and -stdinrpcpass")
-        assert_equal(['foo', 'bar'], self.nodes[0].cli('-rpcuser={}'.format(user), '-stdin', '-stdinrpcpass', input=password + '\nfoo\nbar').echo())
-        assert_raises_process_error(1, 'Incorrect rpcuser or rpcpassword', self.nodes[0].cli('-rpcuser={}'.format(user), '-stdin', '-stdinrpcpass', input='foo').echo)
+        assert_equal(['foo', 'bar'], self.nodes[0].cli(f'-rpcuser={user}', '-stdin', '-stdinrpcpass', input=f'{password}\nfoo\nbar').echo())
+        assert_raises_process_error(1, 'Incorrect rpcuser or rpcpassword', self.nodes[0].cli(f'-rpcuser={user}', '-stdin', '-stdinrpcpass', input='foo').echo)
 
         self.log.info("Test connecting to a non-existing server")
         assert_raises_process_error(1, "Could not connect to the server", self.nodes[0].cli('-rpcport=1').echo)
@@ -122,7 +123,8 @@ class TestBitcoinCli(BitcoinTestFramework):
         assert_raises_process_error(1, "Invalid value for -color option. Valid values: always, auto, never.", self.nodes[0].cli('-getinfo', '-color=foo').send_cli)
 
         self.log.info("Test -getinfo returns expected network and blockchain info")
-        if self.is_wallet_compiled():
+        if self.is_specified_wallet_compiled():
+            self.import_deterministic_coinbase_privkeys()
             self.nodes[0].encryptwallet(password)
         cli_get_info_string = self.nodes[0].cli('-getinfo').send_cli()
         cli_get_info = cli_get_info_string_to_dict(cli_get_info_string)
@@ -147,8 +149,11 @@ class TestBitcoinCli(BitcoinTestFramework):
         cli_get_info = cli_get_info_string_to_dict(cli_get_info_string)
         assert_equal(cli_get_info["Proxies"], "127.0.0.1:9050 (ipv4, ipv6, onion, cjdns), 127.0.0.1:7656 (i2p)")
 
-        if self.is_wallet_compiled():
+        if self.is_specified_wallet_compiled():
             self.log.info("Test -getinfo and dash-cli getwalletinfo return expected wallet info")
+            # Explicitely set the output type in order to have constintent tx vsize / fees
+            # for both legacy and descriptor wallets (disables the change address type detection algorithm)
+            self.restart_node(0, extra_args=[])
             assert_equal(Decimal(cli_get_info['Balance']), BALANCE)
             assert 'Balances' not in cli_get_info_string
             wallet_info = self.nodes[0].getwalletinfo()
@@ -167,19 +172,19 @@ class TestBitcoinCli(BitcoinTestFramework):
             w1 = self.nodes[0].get_wallet_rpc(wallets[0])
             w2 = self.nodes[0].get_wallet_rpc(wallets[1])
             w3 = self.nodes[0].get_wallet_rpc(wallets[2])
-            rpcwallet2 = '-rpcwallet={}'.format(wallets[1])
-            rpcwallet3 = '-rpcwallet={}'.format(wallets[2])
+            rpcwallet2 = f'-rpcwallet={wallets[1]}'
+            rpcwallet3 = f'-rpcwallet={wallets[2]}'
             w1.walletpassphrase(password, self.rpc_timeout)
             w2.encryptwallet(password)
             w1.sendtoaddress(w2.getnewaddress(), amounts[1])
             w1.sendtoaddress(w3.getnewaddress(), amounts[2])
 
             # Mine a block to confirm; adds a block reward (500 DASH) to the default wallet.
-            self.nodes[0].generate(1)
+            self.generate(self.nodes[0], 1)
 
             self.log.info("Test -getinfo with multiple wallets and -rpcwallet returns specified wallet balance")
             for i in range(len(wallets)):
-                cli_get_info_string = self.nodes[0].cli('-getinfo', '-rpcwallet={}'.format(wallets[i])).send_cli()
+                cli_get_info_string = self.nodes[0].cli('-getinfo', f'-rpcwallet={wallets[i]}').send_cli()
                 cli_get_info = cli_get_info_string_to_dict(cli_get_info_string)
                 assert 'Balances' not in cli_get_info_string
                 assert_equal(cli_get_info["Wallet"], wallets[i])
@@ -308,12 +313,12 @@ class TestBitcoinCli(BitcoinTestFramework):
             assert_raises_rpc_error(-19, WALLET_NOT_SPECIFIED, self.nodes[0].cli('-generate', 1, 2, 3).echo)
         else:
             self.log.info("*** Wallet not compiled; cli getwalletinfo and -getinfo wallet tests skipped")
-            self.nodes[0].generate(25)  # maintain block parity with the wallet_compiled conditional branch
+            self.generate(self.nodes[0], 25)  # maintain block parity with the wallet_compiled conditional branch
 
         self.log.info("Test -version with node stopped")
         self.stop_node(0)
         cli_response = self.nodes[0].cli('-version').send_cli()
-        assert "{} RPC client version".format(self.config['environment']['PACKAGE_NAME']) in cli_response
+        assert f"{self.config['environment']['PACKAGE_NAME']} RPC client version" in cli_response
 
         self.log.info("Test -rpcwait option successfully waits for RPC connection")
         self.nodes[0].start()  # start node without RPC connection

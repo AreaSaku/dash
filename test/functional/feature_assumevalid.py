@@ -62,7 +62,12 @@ class AssumeValidTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 3
-        self.extra_args = ["-dip3params=9000:9000", "-checkblockindex=0"]
+        self.extra_args = [
+            "-dip3params=9000:9000",
+            '-testactivationheight=v20@9000',
+            '-testactivationheight=mn_rr@9000',
+            "-checkblockindex=0",
+        ]
         self.rpc_timeout = 120
 
     def setup_network(self):
@@ -84,8 +89,6 @@ class AssumeValidTest(BitcoinTestFramework):
                 break
 
     def run_test(self):
-        p2p0 = self.nodes[0].add_p2p_connection(BaseNode())
-
         # Build the blockchain
         self.tip = int(self.nodes[0].getbestblockhash(), 16)
         self.block_time = self.nodes[0].getblock(self.nodes[0].getbestblockhash())['time'] + 1
@@ -123,11 +126,8 @@ class AssumeValidTest(BitcoinTestFramework):
         tx.vout.append(CTxOut(49 * 100000000, CScript([OP_TRUE])))
         tx.calc_sha256()
 
-        block102 = create_block(self.tip, create_coinbase(height), self.block_time)
+        block102 = create_block(self.tip, create_coinbase(height), self.block_time, txlist=[tx])
         self.block_time += 1
-        block102.vtx.extend([tx])
-        block102.hashMerkleRoot = block102.calc_merkle_root()
-        block102.rehash()
         block102.solve()
         self.blocks.append(block102)
         self.tip = block102.sha256
@@ -137,50 +137,45 @@ class AssumeValidTest(BitcoinTestFramework):
         # Bury the assumed valid block 8400 deep (Dash needs 4x as much blocks to allow -assumevalid to work)
         for _ in range(8400):
             block = create_block(self.tip, create_coinbase(height), self.block_time)
-            block.nVersion = 4
             block.solve()
             self.blocks.append(block)
             self.tip = block.sha256
             self.block_time += 1
             height += 1
 
-        self.nodes[0].disconnect_p2ps()
-
         # Start node1 and node2 with assumevalid so they accept a block with a bad signature.
         self.start_node(1, extra_args=self.extra_args + ["-assumevalid=" + hex(block102.sha256)])
         self.start_node(2, extra_args=self.extra_args + ["-assumevalid=" + hex(block102.sha256)])
-
-        p2p0 = self.nodes[0].add_p2p_connection(BaseNode())
-        p2p1 = self.nodes[1].add_p2p_connection(BaseNode())
-        p2p2 = self.nodes[2].add_p2p_connection(BaseNode())
 
         # Make sure nodes actually accept the many headers
         self.mocktime = self.block_time
         set_node_times(self.nodes, self.mocktime)
 
-        # send header lists to all three nodes.
-        # node0 does not need to receive all headers
-        # node1 must receive all headers as otherwise assumevalid is ignored in ConnectBlock
-        # node2 should NOT receive all headers to force skipping of the assumevalid check in ConnectBlock
+        p2p0 = self.nodes[0].add_p2p_connection(BaseNode())
         p2p0.send_header_for_blocks(self.blocks[0:2000])
-        p2p1.send_header_for_blocks(self.blocks[0:2000])
-        p2p1.send_header_for_blocks(self.blocks[2000:4000])
-        p2p1.send_header_for_blocks(self.blocks[4000:6000])
-        p2p1.send_header_for_blocks(self.blocks[6000:8000])
-        p2p1.send_header_for_blocks(self.blocks[8000:])
-        p2p2.send_header_for_blocks(self.blocks[0:200])
 
         # Send blocks to node0. Block 102 will be rejected.
         self.send_blocks_until_disconnected(p2p0)
         self.wait_until(lambda: self.nodes[0].getblockcount() >= COINBASE_MATURITY + 1)
         assert_equal(self.nodes[0].getblockcount(), COINBASE_MATURITY + 1)
 
+        p2p1 = self.nodes[1].add_p2p_connection(BaseNode())
+        # node1 must receive all headers as otherwise assumevalid is ignored in ConnectBlock
+        p2p1.send_header_for_blocks(self.blocks[0:2000])
+        p2p1.send_header_for_blocks(self.blocks[2000:4000])
+        p2p1.send_header_for_blocks(self.blocks[4000:6000])
+        p2p1.send_header_for_blocks(self.blocks[6000:8000])
+        p2p1.send_header_for_blocks(self.blocks[8000:])
+
         # Send 200 blocks to node1. All blocks, including block 102, will be accepted.
         for i in range(200):
             p2p1.send_message(msg_block(self.blocks[i]))
         # Syncing so many blocks can take a while on slow systems. Give it plenty of time to sync.
-        p2p1.sync_with_ping(960)
+        p2p1.sync_with_ping(timeout=960)
         assert_equal(self.nodes[1].getblock(self.nodes[1].getbestblockhash())['height'], 200)
+
+        p2p2 = self.nodes[2].add_p2p_connection(BaseNode())
+        p2p2.send_header_for_blocks(self.blocks[0:200])
 
         # Send blocks to node2. Block 102 will be rejected.
         self.send_blocks_until_disconnected(p2p2)

@@ -22,7 +22,9 @@ const TestingSetup* g_setup;
 
 void initialize_process_messages()
 {
-    static const auto testing_setup = MakeNoLogFileContext<const TestingSetup>();
+    static const auto testing_setup = MakeNoLogFileContext<const TestingSetup>(
+            /*chain_name=*/CBaseChainParams::REGTEST,
+            /*extra_args=*/{"-txreconciliation"});
     g_setup = testing_setup.get();
     for (int i = 0; i < 2 * COINBASE_MATURITY; i++) {
         MineBlock(g_setup->m_node, CScript() << OP_TRUE);
@@ -30,7 +32,7 @@ void initialize_process_messages()
     SyncWithValidationInterfaceQueue();
 }
 
-FUZZ_TARGET_INIT(process_messages, initialize_process_messages)
+FUZZ_TARGET(process_messages, .init = initialize_process_messages)
 {
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
 
@@ -38,6 +40,8 @@ FUZZ_TARGET_INIT(process_messages, initialize_process_messages)
     TestChainState& chainstate = *static_cast<TestChainState*>(&g_setup->m_node.chainman->ActiveChainstate());
     SetMockTime(1610000000); // any time to successfully reset ibd
     chainstate.ResetIbd();
+
+    LOCK(NetEventsInterface::g_msgproc_mutex);
 
     std::vector<CNode*> peers;
     const auto num_peers_to_add = fuzzed_data_provider.ConsumeIntegralInRange(1, 3);
@@ -50,7 +54,7 @@ FUZZ_TARGET_INIT(process_messages, initialize_process_messages)
         connman.AddTestNode(p2p_node);
     }
 
-    while (fuzzed_data_provider.ConsumeBool()) {
+    LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 10000) {
         const std::string random_message_type{fuzzed_data_provider.ConsumeBytesAsString(CMessageHeader::COMMAND_SIZE).c_str()};
 
         const auto mock_time = ConsumeTime(fuzzed_data_provider);
@@ -62,19 +66,16 @@ FUZZ_TARGET_INIT(process_messages, initialize_process_messages)
 
         CNode& random_node = *PickValue(fuzzed_data_provider, peers);
 
-        (void)connman.ReceiveMsgFrom(random_node, net_msg);
+        connman.FlushSendBuffer(random_node);
+        (void)connman.ReceiveMsgFrom(random_node, std::move(net_msg));
         random_node.fPauseSend = false;
 
         try {
             connman.ProcessMessagesOnce(random_node);
         } catch (const std::ios_base::failure&) {
         }
-        {
-            LOCK(random_node.cs_sendProcessing);
-            g_setup->m_node.peerman->SendMessages(&random_node);
-        }
+        g_setup->m_node.peerman->SendMessages(&random_node);
     }
     SyncWithValidationInterfaceQueue();
-    LOCK2(::cs_main, g_cs_orphans); // See init.cpp for rationale for implicit locking order requirement
     g_setup->m_node.connman->StopNodes();
 }

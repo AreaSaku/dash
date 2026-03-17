@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2020 The Bitcoin Core developers
+// Copyright (c) 2011-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -29,12 +29,11 @@ class SendCoinsRecipient;
 class TransactionTableModel;
 class WalletModelTransaction;
 
-class CCoinControl;
 class CKeyID;
 class COutPoint;
-class COutput;
 class CPubKey;
 class uint256;
+struct COutput;
 
 namespace interfaces {
 class Node;
@@ -42,6 +41,9 @@ namespace CoinJoin {
 class Client;
 } // namespace CoinJoin
 } // namespace interfaces
+namespace wallet {
+class CCoinControl;
+} // namespace wallet
 
 QT_BEGIN_NAMESPACE
 class QTimer;
@@ -70,21 +72,22 @@ public:
 
     enum EncryptionStatus
     {
+        NoKeys,                 // wallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)
         Unencrypted,            // !wallet->IsCrypted()
         Locked,                 // wallet->IsCrypted() && wallet->IsLocked(true)
         UnlockedForMixingOnly,  // wallet->IsCrypted() && !wallet->IsLocked(true) && wallet->IsLocked()
         Unlocked,               // wallet->IsCrypted() && !wallet->IsLocked()
     };
 
-    OptionsModel *getOptionsModel();
-    AddressTableModel *getAddressTableModel();
-    TransactionTableModel *getTransactionTableModel();
-    RecentRequestsTableModel *getRecentRequestsTableModel();
+    OptionsModel* getOptionsModel() const;
+    AddressTableModel* getAddressTableModel() const;
+    TransactionTableModel* getTransactionTableModel() const;
+    RecentRequestsTableModel* getRecentRequestsTableModel() const;
 
     EncryptionStatus getEncryptionStatus() const;
 
     // Check address for validity
-    bool validateAddress(const QString &address);
+    bool validateAddress(const QString& address) const;
 
     // Return status record for SendCoins, contains error id + information
     struct SendCoinsReturn
@@ -99,10 +102,10 @@ public:
     };
 
     // prepare transaction for getting txfee before sending coins
-    SendCoinsReturn prepareTransaction(WalletModelTransaction &transaction, const CCoinControl& coinControl);
+    SendCoinsReturn prepareTransaction(WalletModelTransaction &transaction, const wallet::CCoinControl& coinControl);
 
     // Send coins to a list of recipients
-    SendCoinsReturn sendCoins(WalletModelTransaction &transaction, bool fIsCoinJoin);
+    void sendCoins(WalletModelTransaction& transaction, bool fIsCoinJoin);
 
     // Wallet encryption
     bool setWalletEncrypted(const SecureString& passphrase);
@@ -114,7 +117,7 @@ public:
     bool autoBackupWallet(QString& strBackupWarningRet, QString& strBackupErrorRet);
     int64_t getKeysLeftSinceAutoBackup() const;
 
-    // RAI object for unlocking wallet, returned by requestUnlock()
+    // RAII object for unlocking wallet, returned by requestUnlock()
     class UnlockContext
     {
     public:
@@ -123,22 +126,22 @@ public:
 
         bool isValid() const { return valid; }
 
-        // Copy constructor is disabled.
+        // Disable unused copy/move constructors/assignments explicitly.
         UnlockContext(const UnlockContext&) = delete;
-        // Move operator and constructor transfer the context
-        UnlockContext(UnlockContext&& obj) { CopyFrom(std::move(obj)); }
-        UnlockContext& operator=(UnlockContext&& rhs) { CopyFrom(std::move(rhs)); return *this; }
+        UnlockContext(UnlockContext&&) = delete;
+        UnlockContext& operator=(const UnlockContext&) = delete;
+        UnlockContext& operator=(UnlockContext&&) = delete;
+
     private:
         WalletModel *wallet;
-        bool valid;
-        mutable bool was_locked; // mutable, as it can be set to false by copying
-        mutable bool was_mixing; // mutable, as it can be set to false by copying
-
-        UnlockContext& operator=(const UnlockContext&) = default;
-        void CopyFrom(UnlockContext&& rhs);
+        const bool valid;
+        const bool was_locked;
+        const bool was_mixing;
     };
 
-    UnlockContext requestUnlock(bool fForMixingOnly=false);
+    UnlockContext requestUnlock(bool fForMixingOnly = false);
+
+    bool displayAddress(std::string sAddress);
 
     static bool isWalletEnabled();
 
@@ -155,9 +158,7 @@ public:
     QString getWalletName() const;
     QString getDisplayName() const;
 
-    bool isMultiwallet();
-
-    AddressTableModel* getAddressTableModel() const { return addressTableModel; }
+    bool isMultiwallet() const;
 
     uint256 getLastBlockProcessed() const;
 
@@ -182,16 +183,16 @@ private:
     // (transaction fee, for example)
     OptionsModel *optionsModel;
 
-    AddressTableModel *addressTableModel;
-    TransactionTableModel *transactionTableModel;
-    RecentRequestsTableModel *recentRequestsTableModel;
+    AddressTableModel* addressTableModel{nullptr};
+    TransactionTableModel* transactionTableModel{nullptr};
+    RecentRequestsTableModel* recentRequestsTableModel{nullptr};
 
     // Cache some values to be able to detect changes
     interfaces::WalletBalances m_cached_balances;
-    EncryptionStatus cachedEncryptionStatus;
+    EncryptionStatus cachedEncryptionStatus{Unencrypted};
     QTimer* timer;
-    int cachedNumISLocks;
-    int cachedCoinJoinRounds;
+    int cachedNumISLocks{0};
+    int cachedCoinJoinRounds{0};
 
     // Block hash denoting when the last balance update was done.
     uint256 m_cached_last_update_tip{};
@@ -240,6 +241,10 @@ public Q_SLOTS:
     void updateStatus();
     /* New transaction, or transaction changed status */
     void updateTransaction();
+    /* Check and lock dust outputs for a new transaction */
+    void checkAndLockDustOutputs(const QString& hash);
+    /* Lock existing dust outputs (called on startup and settings change) */
+    void lockExistingDustOutputs();
     /* IS-Lock received */
     void updateNumISLocks();
     /* ChainLock received */

@@ -40,7 +40,7 @@ bool LegacyParsePrechecks(const std::string& str)
         return false;
     if (str.size() >= 1 && (IsSpace(str[0]) || IsSpace(str[str.size() - 1]))) // No padding allowed
         return false;
-    if (!ValidAsCString(str)) // No embedded NUL characters allowed
+    if (!ContainsNoNUL(str)) // No embedded NUL characters allowed
         return false;
     return true;
 }
@@ -157,10 +157,6 @@ FUZZ_TARGET(string)
     const util::Settings settings;
     (void)OnlyHasDefaultSectionSetting(settings, random_string_1, random_string_2);
     (void)ParseNetwork(random_string_1);
-    try {
-        (void)ParseNonRFCJSONValue(random_string_1);
-    } catch (const std::runtime_error&) {
-    }
     (void)RemovePrefix(random_string_1, random_string_2);
     (void)ResolveErrMsg(random_string_1, random_string_2);
     try {
@@ -185,7 +181,7 @@ FUZZ_TARGET(string)
     (void)TrimString(random_string_1);
     (void)TrimString(random_string_1, random_string_2);
     (void)urlDecode(random_string_1);
-    (void)ValidAsCString(random_string_1);
+    (void)ContainsNoNUL(random_string_1);
     (void)_(random_string_1.c_str());
     try {
         throw scriptnum_error{random_string_1};
@@ -280,20 +276,14 @@ FUZZ_TARGET(string)
     }
 
     {
-        const int atoi_result = atoi(random_string_1.c_str());
         const int locale_independent_atoi_result = LocaleIndependentAtoi<int>(random_string_1);
         const int64_t atoi64_result = atoi64_legacy(random_string_1);
-        const bool out_of_range = atoi64_result < std::numeric_limits<int>::min() || atoi64_result > std::numeric_limits<int>::max();
-        if (out_of_range) {
-            assert(locale_independent_atoi_result == 0);
-        } else {
-            assert(atoi_result == locale_independent_atoi_result);
-        }
+        assert(locale_independent_atoi_result == std::clamp<int64_t>(atoi64_result, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()));
     }
 
     {
         const int64_t atoi64_result = atoi64_legacy(random_string_1);
         const int64_t locale_independent_atoi_result = LocaleIndependentAtoi<int64_t>(random_string_1);
-        assert(atoi64_result == locale_independent_atoi_result || locale_independent_atoi_result == 0);
+        assert(atoi64_result == locale_independent_atoi_result);
     }
 }

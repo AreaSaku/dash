@@ -2,11 +2,15 @@
 
 It is possible to run Dash Core as a Tor onion service, and connect to such services.
 
-The following directions assume you have a Tor proxy running on port 9050. Many
-distributions default to having a SOCKS proxy listening on port 9050, but others
-may not. In particular, the Tor Browser Bundle defaults to listening on port 9150.
-See [Tor Project FAQ:TBBSocksPort](https://www.torproject.org/docs/faq.html.en#TBBSocksPort)
-for how to properly configure Tor.
+The following directions assume you have a Tor proxy running on port 9050. Many distributions default to having a SOCKS proxy listening on port 9050, but others may not. In particular, the Tor Browser Bundle defaults to listening on port 9150.
+
+## Compatibility
+
+- Starting with version 20.0, Dash Core only supports Tor version 3 hidden
+  services (Tor v3). Tor v2 addresses are ignored by Dash Core and neither
+  relayed nor stored.
+
+- Tor removed v2 support beginning with version 0.4.6.
 
 ## How to see information about your Tor configuration via Dash Core
 
@@ -22,8 +26,7 @@ CLI `-addrinfo` returns the number of addresses known to your node per
 network. This can be useful to see how many onion peers your node knows,
 e.g. for `-onlynet=onion`.
 
-To fetch a number of onion addresses that your node knows, for example seven
-addresses, use the `getnodeaddresses 7 onion` RPC.
+You can use the `getnodeaddresses` RPC to fetch a number of onion peers known to your node; run `dash-cli help getnodeaddresses` for details.
 
 ## 1. Run Dash Core behind a Tor proxy
 
@@ -92,18 +95,12 @@ out by default (if not, add them):
 ControlPort 9051
 CookieAuthentication 1
 CookieAuthFileGroupReadable 1
+DataDirectoryGroupReadable 1
 ```
 
 Add or uncomment those, save, and restart Tor (usually `systemctl restart tor`
 or `sudo systemctl restart tor` on most systemd-based systems, including recent
 Debian and Ubuntu, or just restart the computer).
-
-On some systems (such as Arch Linux), you may also need to add the following
-line:
-
-```
-DataDirectoryGroupReadable 1
-```
 
 ### Authentication
 

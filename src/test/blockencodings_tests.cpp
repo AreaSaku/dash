@@ -7,6 +7,7 @@
 #include <consensus/merkle.h>
 #include <pow.h>
 #include <streams.h>
+#include <test/util/txmempool.h>
 
 #include <test/util/setup_common.h>
 
@@ -54,7 +55,7 @@ constexpr long SHARED_TX_OFFSET{3};
 
 BOOST_AUTO_TEST_CASE(SimpleRoundTripTest)
 {
-    CTxMemPool pool;
+    CTxMemPool& pool = *Assert(m_node.mempool);
     TestMemPoolEntryHelper entry;
     CBlock block(BuildBlockTestCase());
 
@@ -137,7 +138,7 @@ public:
 
 BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest)
 {
-    CTxMemPool pool;
+    CTxMemPool& pool = *Assert(m_node.mempool);
     TestMemPoolEntryHelper entry;
     CBlock block(BuildBlockTestCase());
 
@@ -207,7 +208,7 @@ BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest)
 
 BOOST_AUTO_TEST_CASE(SufficientPreforwardRTTest)
 {
-    CTxMemPool pool;
+    CTxMemPool& pool = *Assert(m_node.mempool);
     TestMemPoolEntryHelper entry;
     CBlock block(BuildBlockTestCase());
 
@@ -258,7 +259,7 @@ BOOST_AUTO_TEST_CASE(SufficientPreforwardRTTest)
 
 BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest)
 {
-    CTxMemPool pool;
+    CTxMemPool& pool = *Assert(m_node.mempool);
     CMutableTransaction coinbase;
     coinbase.vin.resize(1);
     coinbase.vin[0].scriptSig.resize(10);

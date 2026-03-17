@@ -1,5 +1,5 @@
-// Copyright (c) 2011-2020 The Bitcoin Core developers
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,30 +7,37 @@
 #define BITCOIN_QT_CLIENTMODEL_H
 
 #include <interfaces/node.h>
+#include <netaddress.h>
 #include <sync.h>
+#include <uint256.h>
 
 #include <QObject>
 #include <QDateTime>
 
 #include <atomic>
 #include <memory>
-#include <uint256.h>
 
 class BanTableModel;
-class CBlockIndex;
+class ChainLockFeed;
+class ClientFeeds;
+class CreditPoolFeed;
+class InstantSendFeed;
+class MasternodeFeed;
 class OptionsModel;
+class QuorumFeed;
 class PeerTableModel;
+class PeerTableSortProxy;
+class ProposalFeed;
 enum class SynchronizationState;
-
-QT_BEGIN_NAMESPACE
-class QTimer;
-QT_END_NAMESPACE
+struct LocalServiceInfo;
+namespace interfaces {
+struct BlockTip;
+} // namespace interfaces
 
 enum class BlockSource {
     NONE,
-    REINDEX,
     DISK,
-    NETWORK
+    NETWORK,
 };
 
 enum NumConnections {
@@ -40,9 +47,7 @@ enum NumConnections {
     CONNECTIONS_ALL  = (CONNECTIONS_IN | CONNECTIONS_OUT),
 };
 
-class CDeterministicMNList;
 class CGovernanceObject;
-typedef std::shared_ptr<CDeterministicMNList> CDeterministicMNListPtr;
 
 /** Model for Dash network client. */
 class ClientModel : public QObject
@@ -53,28 +58,35 @@ public:
     explicit ClientModel(interfaces::Node& node, OptionsModel *optionsModel, QObject *parent = nullptr);
     ~ClientModel();
 
+    void stop();
+
     interfaces::Node& node() const { return m_node; }
     interfaces::Masternode::Sync& masternodeSync() const { return m_node.masternodeSync(); }
     interfaces::CoinJoin::Options& coinJoinOptions() const { return m_node.coinJoinOptions(); }
     OptionsModel *getOptionsModel();
     PeerTableModel *getPeerTableModel();
+    PeerTableSortProxy* peerTableSortProxy();
     BanTableModel *getBanTableModel();
+
+    ChainLockFeed* feedChainLock() const { return m_feed_chainlock; }
+    CreditPoolFeed* feedCreditPool() const { return m_feed_creditpool; }
+    InstantSendFeed* feedInstantSend() const { return m_feed_instantsend; }
+    MasternodeFeed* feedMasternode() const { return m_feed_masternode; }
+    ProposalFeed* feedProposal() const { return m_feed_proposal; }
+    QuorumFeed* feedQuorum() const { return m_feed_quorum; }
 
     //! Return number of connections, default is in- and outbound (total)
     int getNumConnections(unsigned int flags = CONNECTIONS_ALL) const;
+    std::map<CNetAddr, LocalServiceInfo> getNetLocalAddresses() const;
     int getNumBlocks() const;
     uint256 getBestBlockHash() EXCLUSIVE_LOCKS_REQUIRED(!m_cached_tip_mutex);
     int getHeaderTipHeight() const;
     int64_t getHeaderTipTime() const;
 
-    void setMasternodeList(const CDeterministicMNList& mnList, const CBlockIndex* tip);
-    std::pair<CDeterministicMNList, const CBlockIndex*> getMasternodeList() const;
-    void refreshMasternodeList();
-
     void getAllGovernanceObjects(std::vector<CGovernanceObject> &obj);
 
-    //! Returns enum BlockSource of the current importing/syncing state
-    enum BlockSource getBlockSource() const;
+    //! Returns the block source of the current importing/syncing state
+    BlockSource getBlockSource() const;
     //! Return warnings to be displayed in status bar
     QString getStatusBarWarnings() const;
 
@@ -97,41 +109,37 @@ public:
 
 private:
     interfaces::Node& m_node;
-    std::unique_ptr<interfaces::Handler> m_handler_show_progress;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_num_connections_changed;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_network_active_changed;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_alert_changed;
-    std::unique_ptr<interfaces::Handler> m_handler_banned_list_changed;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_block_tip;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_chainlock;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_header_tip;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_masternodelist_changed;
-    std::unique_ptr<interfaces::Handler> m_handler_notify_additional_data_sync_progess_changed;
+    std::vector<std::unique_ptr<interfaces::Handler>> m_event_handlers;
     OptionsModel *optionsModel;
-    PeerTableModel *peerTableModel;
-    BanTableModel *banTableModel;
+    PeerTableModel* peerTableModel{nullptr};
+    PeerTableSortProxy* m_peer_table_sort_proxy{nullptr};
+    BanTableModel* banTableModel{nullptr};
 
     //! A thread to interact with m_node asynchronously
     QThread* const m_thread;
 
-    // The cache for mn list is not technically needed because CDeterministicMNManager
-    // caches it internally for recent blocks but it's not enough to get consistent
-    // representation of the list in UI during initial sync/reindex, so we cache it here too.
-    mutable RecursiveMutex cs_mnlinst; // protects mnListCached
-    CDeterministicMNListPtr mnListCached;
-    const CBlockIndex* mnListTip;
+    //! Data sources from different subsystems coordinated by model
+    ChainLockFeed* m_feed_chainlock{nullptr};
+    CreditPoolFeed* m_feed_creditpool{nullptr};
+    InstantSendFeed* m_feed_instantsend{nullptr};
+    MasternodeFeed* m_feed_masternode{nullptr};
+    ProposalFeed* m_feed_proposal{nullptr};
+    QuorumFeed* m_feed_quorum{nullptr};
+    std::unique_ptr<ClientFeeds> m_feeds{nullptr};
 
+    void TipChanged(SynchronizationState sync_state, interfaces::BlockTip tip, double verification_progress, bool header) EXCLUSIVE_LOCKS_REQUIRED(!m_cached_tip_mutex);
     void subscribeToCoreSignals();
     void unsubscribeFromCoreSignals();
 
 Q_SIGNALS:
     void numConnectionsChanged(int count);
+    void governanceChanged();
     void masternodeListChanged() const;
-    void chainLockChanged(const QString& bestChainLockHash, int bestChainLockHeight);
+    void chainLockChanged();
     void numBlocksChanged(int count, const QDateTime& blockDate, const QString& blockHash, double nVerificationProgress, bool header, SynchronizationState sync_state);
     void additionalDataSyncProgressChanged(double nSyncProgress);
-    void mempoolSizeChanged(long count, size_t mempoolSizeInBytes);
-    void islockCountChanged(size_t count);
+    void mempoolSizeChanged(long count, size_t mempoolSizeInBytes, size_t mempoolMaxSizeInBytes);
+    void instantSendChanged();
     void networkActiveChanged(bool networkActive);
     void alertsChanged(const QString &warnings);
 
@@ -140,12 +148,6 @@ Q_SIGNALS:
 
     // Show progress dialog e.g. for verifychain
     void showProgress(const QString &title, int nProgress);
-
-public Q_SLOTS:
-    void updateNumConnections(int numConnections);
-    void updateNetworkActive(bool networkActive);
-    void updateAlert();
-    void updateBanlist();
 };
 
 #endif // BITCOIN_QT_CLIENTMODEL_H

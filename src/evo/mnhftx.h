@@ -1,29 +1,31 @@
-// Copyright (c) 2021-2023 The Dash Core developers
+// Copyright (c) 2021-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_EVO_MNHFTX_H
 #define BITCOIN_EVO_MNHFTX_H
 
-#include <bls/bls.h>
-#include <gsl/pointers.h>
-#include <primitives/transaction.h>
+#include <saltedhasher.h>
 #include <sync.h>
 #include <threadsafety.h>
+#include <versionbits.h>
+
+#include <bls/bls.h>
+#include <unordered_lru_cache.h>
+
+#include <gsl/pointers.h>
 #include <univalue.h>
 
 #include <optional>
-#include <saltedhasher.h>
-#include <unordered_map>
-#include <unordered_lru_cache.h>
-#include <versionbits.h>
 
 class BlockValidationState;
 class CBlock;
 class CBlockIndex;
 class CEvoDB;
+class CTransaction;
 class ChainstateManager;
 class TxValidationState;
+struct RPCResult;
 namespace llmq {
 class CQuorumManager;
 }
@@ -43,21 +45,13 @@ public:
     SERIALIZE_METHODS(MNHFTx, obj)
     {
         READWRITE(obj.versionBit, obj.quorumHash);
-        READWRITE(CBLSSignatureVersionWrapper(const_cast<CBLSSignature&>(obj.sig), /* fLegacy= */ false));
+        READWRITE(CBLSSignatureVersionWrapper(const_cast<CBLSSignature&>(obj.sig), /*legacy=*/false));
     }
 
     std::string ToString() const;
 
-    [[nodiscard]] UniValue ToJson() const
-    {
-        UniValue obj;
-        obj.clear();
-        obj.setObject();
-        obj.pushKV("versionBit", (int)versionBit);
-        obj.pushKV("quorumHash", quorumHash.ToString());
-        obj.pushKV("sig", sig.ToString());
-        return obj;
-    }
+    [[nodiscard]] static RPCResult GetJsonHelp(const std::string& key, bool optional);
+    [[nodiscard]] UniValue ToJson() const;
 };
 
 class MNHFTxPayload
@@ -87,79 +81,60 @@ public:
 
     std::string ToString() const;
 
-    [[nodiscard]] UniValue ToJson() const
-    {
-        UniValue obj;
-        obj.setObject();
-        obj.pushKV("version", (int)nVersion);
-        obj.pushKV("signal", signal.ToJson());
-        return obj;
-    }
+    [[nodiscard]] static RPCResult GetJsonHelp(const std::string& key, bool optional);
+    [[nodiscard]] UniValue ToJson() const;
 };
 
 class CMNHFManager : public AbstractEHFManager
 {
 private:
     CEvoDB& m_evoDb;
-    ChainstateManager* m_chainman{nullptr};
-    llmq::CQuorumManager* m_qman{nullptr};
+    // TODO: move its functionallity of ProcessBlock, UndoBlock to specialtxman;
+    // it will help to drop dependency on m_chainman, m_qman here (and validation.h)
+    // Secondly, store in database active EHF signals not for each block;
+    // but quite opposite: keep only hash of block where signal is added.
+    // TODO: implement migration to a new format
+    const ChainstateManager& m_chainman;
+    const llmq::CQuorumManager& m_qman;
 
     static constexpr size_t MNHFCacheSize = 1000;
     Mutex cs_cache;
     // versionBit <-> height
-    unordered_lru_cache<uint256, Signals, StaticSaltedHasher> mnhfCache GUARDED_BY(cs_cache) {MNHFCacheSize};
+    Uint256LruHashMap<Signals> mnhfCache GUARDED_BY(cs_cache){MNHFCacheSize};
 
-    // This cache is used only for v20 activation to avoid double lock through VersionBitsConditionChecker::SignalHeight
-    VersionBitsCache v20_activation GUARDED_BY(cs_cache);
 public:
-    explicit CMNHFManager(CEvoDB& evoDb);
+    CMNHFManager() = delete;
+    CMNHFManager(const CMNHFManager&) = delete;
+    CMNHFManager& operator=(const CMNHFManager&) = delete;
+    explicit CMNHFManager(CEvoDB& evoDb, const ChainstateManager& chainman, const llmq::CQuorumManager& qman);
     ~CMNHFManager();
-    explicit CMNHFManager(const CMNHFManager&) = delete;
 
     /**
      * Every new block should be processed when Tip() is updated by calling of CMNHFManager::ProcessBlock.
      * This function actually does only validate EHF transaction for this block and update internal caches/evodb state
-     *
-     * @pre Caller must ensure that LLMQContext has been initialized and the llmq::CQuorumManager pointer has been
-     *      set by calling ConnectManagers() for this CMNHFManager instance
      */
-    std::optional<Signals> ProcessBlock(const CBlock& block, const CBlockIndex* const pindex, bool fJustCheck, BlockValidationState& state);
+    std::optional<Signals> ProcessBlock(const CBlock& block, const CBlockIndex* const pindex, bool fJustCheck,
+                                        BlockValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     /**
      * Every undo block should be processed when Tip() is updated by calling of CMNHFManager::UndoBlock
      * This function actually does nothing at the moment, because status of ancestor block is already known.
      * Although it should be still called to do some sanity checks
-     *
-     * @pre Caller must ensure that LLMQContext has been initialized and the llmq::CQuorumManager pointer has been
-     *      set by calling ConnectManagers() for this CMNHFManager instance
      */
-    bool UndoBlock(const CBlock& block, const CBlockIndex* const pindex);
+    bool UndoBlock(const CBlock& block, const CBlockIndex* const pindex) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     // Implements interface
-    Signals GetSignalsStage(const CBlockIndex* const pindexPrev) override;
+    Signals GetSignalsStage(const CBlockIndex* const pindexPrev) override EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     /**
      * Helper that used in Unit Test to forcely setup EHF signal for specific block
      */
     void AddSignal(const CBlockIndex* const pindex, int bit) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
-    /**
-     * Set llmq::CQuorumManager pointer.
-     *
-     * Separated from constructor to allow LLMQContext to use CMNHFManager in read-only capacity.
-     * Required to mutate state.
-     */
-    void ConnectManagers(gsl::not_null<ChainstateManager*> chainman, gsl::not_null<llmq::CQuorumManager*> qman);
-
-    /**
-     * Reset llmq::CQuorumManager pointer.
-     *
-     * @pre Must be called before LLMQContext (containing llmq::CQuorumManager) is destroyed.
-     */
-    void DisconnectManagers() { m_chainman = nullptr; m_qman = nullptr; };
+    bool ForceSignalDBUpdate() EXCLUSIVE_LOCKS_REQUIRED(::cs_main, !cs_cache);
 
 private:
-    void AddToCache(const Signals& signals, const CBlockIndex* const pindex);
+    void AddToCache(const Signals& signals, const CBlockIndex* const pindex) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     /**
      * This function returns list of signals available on previous block.
@@ -167,13 +142,13 @@ private:
      * until state won't be recovered.
      * NOTE: that some signals could expired between blocks.
      */
-    Signals GetForBlock(const CBlockIndex* const pindex);
+    Signals GetForBlock(const CBlockIndex* const pindex) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     /**
      * This function access to in-memory cache or to evo db but does not calculate anything
      * NOTE: that some signals could expired between blocks.
      */
-    std::optional<Signals> GetFromCache(const CBlockIndex* const pindex);
+    std::optional<Signals> GetFromCache(const CBlockIndex* const pindex) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 };
 
 std::optional<uint8_t> extractEHFSignal(const CTransaction& tx);

@@ -18,7 +18,7 @@ bool CZMQAbstractNotifier::NotifyBlock(const CBlockIndex * /*CBlockIndex*/)
     return true;
 }
 
-bool CZMQAbstractNotifier::NotifyChainLock(const CBlockIndex * /*CBlockIndex*/, const std::shared_ptr<const llmq::CChainLockSig> & /*clsig*/)
+bool CZMQAbstractNotifier::NotifyChainLock(const CBlockIndex * /*CBlockIndex*/, const std::shared_ptr<const chainlock::ChainLockSig> & /*clsig*/)
 {
     return true;
 }
@@ -28,12 +28,32 @@ bool CZMQAbstractNotifier::NotifyTransaction(const CTransaction &/*transaction*/
     return true;
 }
 
-bool CZMQAbstractNotifier::NotifyTransactionLock(const CTransactionRef &/*transaction*/, const std::shared_ptr<const llmq::CInstantSendLock>& /*islock*/)
+bool CZMQAbstractNotifier::NotifyBlockConnect(const CBlockIndex * /*CBlockIndex*/)
 {
     return true;
 }
 
-bool CZMQAbstractNotifier::NotifyGovernanceVote(const CDeterministicMNList& /*tip_mn_list*/, const std::shared_ptr<const CGovernanceVote> & /*vote*/)
+bool CZMQAbstractNotifier::NotifyBlockDisconnect(const CBlockIndex * /*CBlockIndex*/)
+{
+    return true;
+}
+
+bool CZMQAbstractNotifier::NotifyTransactionAcceptance(const CTransaction &/*transaction*/, uint64_t mempool_sequence)
+{
+    return true;
+}
+
+bool CZMQAbstractNotifier::NotifyTransactionRemoval(const CTransaction &/*transaction*/, uint64_t mempool_sequence)
+{
+    return true;
+}
+
+bool CZMQAbstractNotifier::NotifyTransactionLock(const CTransactionRef &/*transaction*/, const std::shared_ptr<const instantsend::InstantSendLock>& /*islock*/)
+{
+    return true;
+}
+
+bool CZMQAbstractNotifier::NotifyGovernanceVote(const std::shared_ptr<CDeterministicMNList>& /*tip_mn_list*/, const std::shared_ptr<const CGovernanceVote> & /*vote*/)
 {
     return true;
 }

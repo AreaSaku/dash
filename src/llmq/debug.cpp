@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2024 The Dash Core developers
+// Copyright (c) 2018-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -15,8 +15,8 @@
 
 namespace llmq
 {
-UniValue CDKGDebugSessionStatus::ToJson(CDeterministicMNManager& dmnman, const ChainstateManager& chainman,
-                                        int quorumIndex, int detailLevel) const
+UniValue CDKGDebugSessionStatus::ToJson(CDeterministicMNManager& dmnman, CQuorumSnapshotManager& qsnapman,
+                                        const ChainstateManager& chainman, int quorumIndex, int detailLevel) const
 {
     UniValue ret(UniValue::VOBJ);
 
@@ -26,15 +26,15 @@ UniValue CDKGDebugSessionStatus::ToJson(CDeterministicMNManager& dmnman, const C
 
     std::vector<CDeterministicMNCPtr> dmnMembers;
     if (detailLevel == 2) {
-        const CBlockIndex* pindex = WITH_LOCK(cs_main, return chainman.m_blockman.LookupBlockIndex(quorumHash));
+        const CBlockIndex* pindex = WITH_LOCK(::cs_main, return chainman.m_blockman.LookupBlockIndex(quorumHash));
         if (pindex != nullptr) {
-            dmnMembers = utils::GetAllQuorumMembers(llmqType, dmnman, pindex);
+            dmnMembers = utils::GetAllQuorumMembers(llmqType, {dmnman, qsnapman, chainman, pindex});
         }
     }
 
     ret.pushKV("llmqType", ToUnderlying(llmqType));
     ret.pushKV("quorumHash", quorumHash.ToString());
-    ret.pushKV("quorumHeight", (int)quorumHeight);
+    ret.pushKV("quorumHeight", quorumHeight);
     ret.pushKV("phase", ToUnderlying(phase));
 
     ret.pushKV("sentContributions", statusBits.sentContributions);
@@ -61,10 +61,10 @@ UniValue CDKGDebugSessionStatus::ToJson(CDeterministicMNManager& dmnman, const C
             if (detailLevel == 0) {
                 v.count++;
             } else if (detailLevel == 1) {
-                v.arr.push_back((int)idx);
+                v.arr.push_back(idx);
             } else if (detailLevel == 2) {
                 UniValue a(UniValue::VOBJ);
-                a.pushKV("memberIndex", (int)idx);
+                a.pushKV("memberIndex", idx);
                 if (idx < dmnMembers.size()) {
                     a.pushKV("proTxHash", dmnMembers[idx]->proTxHash.ToString());
                 }
@@ -109,8 +109,10 @@ UniValue CDKGDebugSessionStatus::ToJson(CDeterministicMNManager& dmnman, const C
 
 CDKGDebugManager::CDKGDebugManager() = default;
 
-UniValue CDKGDebugStatus::ToJson(CDeterministicMNManager& dmnman, const ChainstateManager& chainman,
-                                 int detailLevel) const
+CDKGDebugManager::~CDKGDebugManager() = default;
+
+UniValue CDKGDebugStatus::ToJson(CDeterministicMNManager& dmnman, CQuorumSnapshotManager& qsnapman,
+                                 const ChainstateManager& chainman, int detailLevel) const
 {
     UniValue ret(UniValue::VOBJ);
 
@@ -127,7 +129,7 @@ UniValue CDKGDebugStatus::ToJson(CDeterministicMNManager& dmnman, const Chainsta
         UniValue s(UniValue::VOBJ);
         s.pushKV("llmqType", std::string(llmq_params_opt->name));
         s.pushKV("quorumIndex", p.first.second);
-        s.pushKV("status", p.second.ToJson(dmnman, chainman, p.first.second, detailLevel));
+        s.pushKV("status", p.second.ToJson(dmnman, qsnapman, chainman, p.first.second, detailLevel));
 
         sessionsArrJson.push_back(s);
     }

@@ -1,26 +1,29 @@
-// Copyright (c) 2023 The Dash Core developers
+// Copyright (c) 2023-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_EVO_ASSETLOCKTX_H
 #define BITCOIN_EVO_ASSETLOCKTX_H
 
-#include <bls/bls_ies.h>
-#include <primitives/transaction.h>
+#include <bls/bls.h>
+#include <consensus/amount.h>
 #include <gsl/pointers.h>
-
+#include <primitives/transaction.h>
 #include <serialize.h>
 #include <univalue.h>
 
 #include <optional>
 
-class BlockManager;
 class CBlockIndex;
 class CRangesSet;
 class TxValidationState;
+struct RPCResult;
 namespace llmq {
 class CQuorumManager;
 } // namespace llmq
+namespace node {
+class BlockManager;
+} // namespace node
 
 class CAssetLockPayload
 {
@@ -49,19 +52,8 @@ public:
 
     std::string ToString() const;
 
-    [[nodiscard]] UniValue ToJson() const
-    {
-        UniValue obj;
-        obj.setObject();
-        obj.pushKV("version", int(nVersion));
-        UniValue outputs;
-        outputs.setArray();
-        for (const CTxOut& out : creditOutputs) {
-            outputs.push_back(out.ToString());
-        }
-        obj.pushKV("creditOutputs", outputs);
-        return obj;
-    }
+    [[nodiscard]] static RPCResult GetJsonHelp(const std::string& key, bool optional);
+    [[nodiscard]] UniValue ToJson() const;
 
     // getters
     uint8_t getVersion() const
@@ -118,18 +110,8 @@ public:
 
     std::string ToString() const;
 
-    [[nodiscard]] UniValue ToJson() const
-    {
-        UniValue obj;
-        obj.setObject();
-        obj.pushKV("version", int(nVersion));
-        obj.pushKV("index", int(index));
-        obj.pushKV("fee", int(fee));
-        obj.pushKV("requestedHeight", int(requestedHeight));
-        obj.pushKV("quorumHash", quorumHash.ToString());
-        obj.pushKV("quorumSig", quorumSig.ToString());
-        return obj;
-    }
+    [[nodiscard]] static RPCResult GetJsonHelp(const std::string& key, bool optional);
+    [[nodiscard]] UniValue ToJson() const;
 
     bool VerifySig(const llmq::CQuorumManager& qman, const uint256& msgHash, gsl::not_null<const CBlockIndex*> pindexTip, TxValidationState& state) const;
 
@@ -173,8 +155,8 @@ public:
 };
 
 bool CheckAssetLockTx(const CTransaction& tx, TxValidationState& state);
-bool CheckAssetUnlockTx(const BlockManager& blockman, const llmq::CQuorumManager& qman, const CTransaction& tx, gsl::not_null<const CBlockIndex*> pindexPrev, const std::optional<CRangesSet>& indexes, TxValidationState& state);
-bool CheckAssetLockUnlockTx(const BlockManager& blockman, const llmq::CQuorumManager& qman, const CTransaction& tx, gsl::not_null<const CBlockIndex*> pindexPrev, const std::optional<CRangesSet>& indexes, TxValidationState& state);
+bool CheckAssetUnlockTx(const node::BlockManager& blockman, const llmq::CQuorumManager& qman, const CTransaction& tx, gsl::not_null<const CBlockIndex*> pindexPrev, const std::optional<CRangesSet>& indexes, TxValidationState& state);
+bool CheckAssetLockUnlockTx(const node::BlockManager& blockman, const llmq::CQuorumManager& qman, const CTransaction& tx, gsl::not_null<const CBlockIndex*> pindexPrev, const std::optional<CRangesSet>& indexes, TxValidationState& state);
 bool GetAssetUnlockFee(const CTransaction& tx, CAmount& txfee, TxValidationState& state);
 
 #endif // BITCOIN_EVO_ASSETLOCKTX_H

@@ -10,8 +10,16 @@
 #include <serialize.h>
 #include <txdb.h>
 #include <undo.h>
+#include <util/system.h>
 #include <validation.h>
 #include <util/check.h>
+
+using kernel::CCoinsStats;
+using kernel::GetBogoSize;
+using kernel::TxOutSer;
+
+using node::ReadBlockFromDisk;
+using node::UndoReadFromDisk;
 
 static constexpr uint8_t DB_BLOCK_HASH{'s'};
 static constexpr uint8_t DB_BLOCK_HEIGHT{'t'};
@@ -98,7 +106,7 @@ std::unique_ptr<CoinStatsIndex> g_coin_stats_index;
 
 CoinStatsIndex::CoinStatsIndex(size_t n_cache_size, bool f_memory, bool f_wipe)
 {
-    fs::path path{GetDataDir() / "indexes" / "coinstats"};
+    fs::path path{gArgs.GetDataDirNet() / "indexes" / "coinstats"};
     fs::create_directories(path);
 
     m_db = std::make_unique<CoinStatsIndex::DB>(path / "db", n_cache_size, f_memory, f_wipe);
@@ -132,16 +140,12 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
             }
         }
 
-        // TODO: Deduplicate BIP30 related code
-        bool is_bip30_block{(pindex->nHeight == 91722 && pindex->GetBlockHash() == uint256S("0x00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e")) ||
-                            (pindex->nHeight == 91812 && pindex->GetBlockHash() == uint256S("0x00000000000af0aed4792b1acee3d966af36cf5def14935db8de83d6f9306f2f"))};
-
         // Add the new utxos created from the block
         for (size_t i = 0; i < block.vtx.size(); ++i) {
             const auto& tx{block.vtx.at(i)};
 
             // Skip duplicate txid coinbase transactions (BIP30).
-            if (is_bip30_block && tx->IsCoinBase()) {
+            if (IsBIP30Unspendable(*pindex) && tx->IsCoinBase()) {
                 m_total_unspendable_amount += block_subsidy;
                 m_total_unspendables_bip30 += block_subsidy;
                 continue;
@@ -228,7 +232,7 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
     return m_db->Write(DBHeightKey(pindex->nHeight), value);
 }
 
-static bool CopyHeightIndexToHashIndex(CDBIterator& db_it, CDBBatch& batch,
+[[nodiscard]] static bool CopyHeightIndexToHashIndex(CDBIterator& db_it, CDBBatch& batch,
                                        const std::string& index_name,
                                        int start_height, int stop_height)
 {
@@ -272,7 +276,7 @@ bool CoinStatsIndex::Rewind(const CBlockIndex* current_tip, const CBlockIndex* n
 
     {
         LOCK(cs_main);
-        CBlockIndex* iter_tip{m_chainstate->m_blockman.LookupBlockIndex(current_tip->GetBlockHash())};
+        const CBlockIndex* iter_tip{m_chainstate->m_blockman.LookupBlockIndex(current_tip->GetBlockHash())};
         const auto& consensus_params{Params().GetConsensus()};
 
         do {
@@ -283,7 +287,9 @@ bool CoinStatsIndex::Rewind(const CBlockIndex* current_tip, const CBlockIndex* n
                              __func__, iter_tip->GetBlockHash().ToString());
             }
 
-            ReverseBlock(block, iter_tip);
+            if (!ReverseBlock(block, iter_tip)) {
+                return false; // failure cause logged internally
+            }
 
             iter_tip = iter_tip->GetAncestor(iter_tip->nHeight - 1);
         } while (new_tip != iter_tip);
@@ -311,28 +317,31 @@ static bool LookUpOne(const CDBWrapper& db, const CBlockIndex* block_index, DBVa
     return db.Read(DBHashKey(block_index->GetBlockHash()), result);
 }
 
-bool CoinStatsIndex::LookUpStats(const CBlockIndex* block_index, CCoinsStats& coins_stats) const
+std::optional<CCoinsStats> CoinStatsIndex::LookUpStats(const CBlockIndex* block_index) const
 {
+    CCoinsStats stats{Assert(block_index)->nHeight, block_index->GetBlockHash()};
+    stats.index_used = true;
+
     DBVal entry;
     if (!LookUpOne(*m_db, block_index, entry)) {
-        return false;
+        return std::nullopt;
     }
 
-    coins_stats.hashSerialized = entry.muhash;
-    coins_stats.nTransactionOutputs = entry.transaction_output_count;
-    coins_stats.nBogoSize = entry.bogo_size;
-    coins_stats.total_amount = entry.total_amount;
-    coins_stats.total_subsidy = entry.total_subsidy;
-    coins_stats.total_unspendable_amount = entry.total_unspendable_amount;
-    coins_stats.total_prevout_spent_amount = entry.total_prevout_spent_amount;
-    coins_stats.total_new_outputs_ex_coinbase_amount = entry.total_new_outputs_ex_coinbase_amount;
-    coins_stats.total_coinbase_amount = entry.total_coinbase_amount;
-    coins_stats.total_unspendables_genesis_block = entry.total_unspendables_genesis_block;
-    coins_stats.total_unspendables_bip30 = entry.total_unspendables_bip30;
-    coins_stats.total_unspendables_scripts = entry.total_unspendables_scripts;
-    coins_stats.total_unspendables_unclaimed_rewards = entry.total_unspendables_unclaimed_rewards;
+    stats.hashSerialized = entry.muhash;
+    stats.nTransactionOutputs = entry.transaction_output_count;
+    stats.nBogoSize = entry.bogo_size;
+    stats.total_amount = entry.total_amount;
+    stats.total_subsidy = entry.total_subsidy;
+    stats.total_unspendable_amount = entry.total_unspendable_amount;
+    stats.total_prevout_spent_amount = entry.total_prevout_spent_amount;
+    stats.total_new_outputs_ex_coinbase_amount = entry.total_new_outputs_ex_coinbase_amount;
+    stats.total_coinbase_amount = entry.total_coinbase_amount;
+    stats.total_unspendables_genesis_block = entry.total_unspendables_genesis_block;
+    stats.total_unspendables_bip30 = entry.total_unspendables_bip30;
+    stats.total_unspendables_scripts = entry.total_unspendables_scripts;
+    stats.total_unspendables_unclaimed_rewards = entry.total_unspendables_unclaimed_rewards;
 
-    return true;
+    return stats;
 }
 
 bool CoinStatsIndex::Init()

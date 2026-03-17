@@ -1,26 +1,26 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_POLICY_FEES_H
 #define BITCOIN_POLICY_FEES_H
 
-#include <amount.h>
+#include <consensus/amount.h>
 #include <policy/feerate.h>
-#include <uint256.h>
 #include <random.h>
 #include <sync.h>
+#include <threadsafety.h>
+#include <uint256.h>
 
 #include <array>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
-class CAutoFile;
-class CFeeRate;
+class AutoFile;
 class CTxMemPoolEntry;
-class CTxMemPool;
 class TxConfirmStats;
 
 /* Identifier for each of the 3 different TxConfirmStats which will track
@@ -218,11 +218,11 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs_fee_estimator);
 
     /** Write estimation data to a file */
-    bool Write(CAutoFile& fileout) const
+    bool Write(AutoFile& fileout) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs_fee_estimator);
 
     /** Read estimation data from a file */
-    bool Read(CAutoFile& filein)
+    bool Read(AutoFile& filein)
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs_fee_estimator);
 
     /** Empty mempool transactions on shutdown to record failure to confirm for txs still in mempool */
@@ -240,16 +240,16 @@ public:
 private:
     mutable Mutex m_cs_fee_estimator;
 
-    unsigned int nBestSeenHeight GUARDED_BY(m_cs_fee_estimator);
-    unsigned int firstRecordedHeight GUARDED_BY(m_cs_fee_estimator);
-    unsigned int historicalFirst GUARDED_BY(m_cs_fee_estimator);
-    unsigned int historicalBest GUARDED_BY(m_cs_fee_estimator);
+    unsigned int nBestSeenHeight GUARDED_BY(m_cs_fee_estimator){0};
+    unsigned int firstRecordedHeight GUARDED_BY(m_cs_fee_estimator){0};
+    unsigned int historicalFirst GUARDED_BY(m_cs_fee_estimator){0};
+    unsigned int historicalBest GUARDED_BY(m_cs_fee_estimator){0};
 
     struct TxStatsInfo
     {
-        unsigned int blockHeight;
-        unsigned int bucketIndex;
-        TxStatsInfo() : blockHeight(0), bucketIndex(0) {}
+        unsigned int blockHeight{0};
+        unsigned int bucketIndex{0};
+        TxStatsInfo() {}
     };
 
     // map of txids to information about that transaction
@@ -260,8 +260,8 @@ private:
     std::unique_ptr<TxConfirmStats> shortStats PT_GUARDED_BY(m_cs_fee_estimator);
     std::unique_ptr<TxConfirmStats> longStats PT_GUARDED_BY(m_cs_fee_estimator);
 
-    unsigned int trackedTxs GUARDED_BY(m_cs_fee_estimator);
-    unsigned int untrackedTxs GUARDED_BY(m_cs_fee_estimator);
+    unsigned int trackedTxs GUARDED_BY(m_cs_fee_estimator){0};
+    unsigned int untrackedTxs GUARDED_BY(m_cs_fee_estimator){0};
 
     std::vector<double> buckets GUARDED_BY(m_cs_fee_estimator); // The upper-bound of the range for the bucket (inclusive)
     std::map<double, unsigned int> bucketMap GUARDED_BY(m_cs_fee_estimator); // Map of bucket upper-bound to index into all vectors by bucket

@@ -15,7 +15,6 @@ variants.
 - `test_address()` is called to call getaddressinfo for an address on node1
   and test the values returned."""
 
-from test_framework.address import key_to_p2pkh
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.descriptors import descsum_create
 from test_framework.util import (
@@ -29,11 +28,17 @@ from test_framework.wallet_util import (
 )
 
 class ImportDescriptorsTest(BitcoinTestFramework):
+    def add_options(self, parser):
+        self.add_wallet_options(parser, legacy=False)
+
     def set_test_params(self):
         self.num_nodes = 2
         self.extra_args = [[],
                            ["-keypool=5"]
                           ]
+        # whitelist peers to speed up tx relay / mempool sync
+        for args in self.extra_args:
+            args.append("-whitelist=noban@127.0.0.1")
         self.setup_clean_chain = True
         self.wallet_names = []
 
@@ -52,7 +57,7 @@ class ImportDescriptorsTest(BitcoinTestFramework):
         result = wrpc.importdescriptors([req])
         observed_warnings = []
         if 'warnings' in result[0]:
-           observed_warnings = result[0]['warnings']
+            observed_warnings = result[0]['warnings']
         assert_equal("\n".join(sorted(warnings)), "\n".join(sorted(observed_warnings)))
         assert_equal(result[0]['success'], success)
         if error_code is not None:
@@ -73,7 +78,7 @@ class ImportDescriptorsTest(BitcoinTestFramework):
         assert_equal(wpriv.getwalletinfo()['keypoolsize'], 0)
 
         self.log.info('Mining coins')
-        w0.generatetoaddress(101, w0.getnewaddress())
+        self.generatetoaddress(self.nodes[0], 101, w0.getnewaddress())
 
         # RPC importdescriptors -----------------------------------------------
 
@@ -122,12 +127,11 @@ class ImportDescriptorsTest(BitcoinTestFramework):
 
         self.log.info("Internal addresses should be detected as such")
         key = get_generate_key()
-        addr = key_to_p2pkh(key.pubkey)
         self.test_importdesc({"desc": descsum_create("pkh(" + key.pubkey + ")"),
                               "timestamp": "now",
                               "internal": True},
                              success=True)
-        info = w1.getaddressinfo(addr)
+        info = w1.getaddressinfo(key.p2pkh_addr)
         assert_equal(info["ismine"], True)
         assert_equal(info["ischange"], True)
 
@@ -380,8 +384,7 @@ class ImportDescriptorsTest(BitcoinTestFramework):
                      solvable=True,
                      ismine=True)
         txid = w0.sendtoaddress(address, 49.99995540)
-        w0.generatetoaddress(6, w0.getnewaddress())
-        self.sync_blocks()
+        self.generatetoaddress(self.nodes[0], 6, w0.getnewaddress())
         tx = wpriv.createrawtransaction([{"txid": txid, "vout": 0}], {w0.getnewaddress(): 49.999})
         signed_tx = wpriv.signrawtransactionwithwallet(tx)
         w1.sendrawtransaction(signed_tx['hex'])
@@ -426,10 +429,8 @@ class ImportDescriptorsTest(BitcoinTestFramework):
         assert_equal(change_addr, '91WxMwg2NHD1PwHChhbAkeCN6nQ8ikdLEx')
         assert_equal(wmulti_priv.getwalletinfo()['keypoolsize'], 1000)
         txid = w0.sendtoaddress(addr, 10)
-        self.nodes[0].generate(6)
-        self.sync_all()
-        wmulti_priv.sendtoaddress(w0.getnewaddress(), 8) # uses change 1
-        self.nodes[0].generate(6)
+        self.generate(self.nodes[0], 6)
+        send_txid = wmulti_priv.sendtoaddress(w0.getnewaddress(), 8) # uses change 1
         self.sync_all()
 
         self.nodes[1].createwallet(wallet_name="wmulti_pub", disable_private_keys=True, blank=True, descriptors=True)
@@ -456,7 +457,9 @@ class ImportDescriptorsTest(BitcoinTestFramework):
         addr = wmulti_pub.getnewaddress() # uses receive 1
         assert_equal(addr, '91cA4fLGaDCr6b9W2c5j1ph9PDpq9WbEhk') # Derived at m/84'/0'/0'/1
         change_addr = wmulti_pub.getrawchangeaddress() # uses receive 2
-        assert_equal(change_addr, '91WxMwg2NHD1PwHChhbAkeCN6nQ8ikdLEx')
+        assert_equal(change_addr, '8y2sLiPQnB81bAeiRvwbjozJXnCCNH2nHb')
+        assert send_txid in self.nodes[0].getrawmempool(True)
+        assert send_txid in (x['txid'] for x in wmulti_pub.listunspent(0))
         assert_equal(wmulti_pub.getwalletinfo()['keypoolsize'], 999)
 
         # generate some utxos for next tests
@@ -467,8 +470,7 @@ class ImportDescriptorsTest(BitcoinTestFramework):
         txid2 = w0.sendtoaddress(addr2, 10)
         vout2 = find_vout_for_address(self.nodes[0], txid2, addr2)
 
-        self.nodes[0].generate(6)
-        self.sync_all()
+        self.generate(self.nodes[0], 6)
         assert_equal(wmulti_pub.getbalance(), wmulti_priv.getbalance())
 
         # Make sure that descriptor wallets containing multiple xpubs in a single descriptor load correctly
@@ -558,12 +560,9 @@ class ImportDescriptorsTest(BitcoinTestFramework):
 
         addr = multi_priv_big.getnewaddress("")
         w0.sendtoaddress(addr, 10)
-        self.nodes[0].generate(6)
-        self.sync_all()
+        self.generate(self.nodes[0], 6)
         # It is standard and would relay.
-        txid = multi_priv_big.sendtoaddress(w0.getnewaddress(), 10, "", "",
-                                            True)
-
+        txid = multi_priv_big.sendtoaddress(w0.getnewaddress(), 10, "", "", True)
 
         self.log.info("Amending multisig with new private keys")
         self.nodes[1].createwallet(wallet_name="wmulti_priv3", descriptors=True)

@@ -1,21 +1,22 @@
-// Copyright (c) 2017-2020 The Bitcoin Core developers
+// Copyright (c) 2017-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_NODE_TRANSACTION_H
 #define BITCOIN_NODE_TRANSACTION_H
 
-#include <attributes.h>
 #include <policy/feerate.h>
 #include <primitives/transaction.h>
 #include <util/error.h>
 
 class CBlockIndex;
 class CTxMemPool;
-struct NodeContext;
 namespace Consensus {
 struct Params;
 }
+
+namespace node {
+struct NodeContext;
 
 /** Maximum fee rate for sendrawtransaction and testmempoolaccept RPC calls.
  * Also used by the GUI when broadcasting a completed PSBT.
@@ -35,13 +36,12 @@ static const CFeeRate DEFAULT_MAX_RAW_TX_FEE_RATE{COIN / 10};
  *
  * @param[in]  node reference to node context
  * @param[in]  tx the transaction to broadcast
- * @param[out] err_string reference to std::string to fill with error string if available
- * @param[in]  max_tx_fee reject txs with fees higher than this (if 0, accept any fee)
+ * @param[out] err_string reference to bilingual_str to fill with error string if available
  * @param[in]  relay flag if both mempool insertion and p2p relay are requested
  * @param[in]  wait_callback wait until callbacks have been processed to avoid stale result due to a sequentially RPC.
  * return error
  */
-[[nodiscard]] TransactionError BroadcastTransaction(NodeContext& node, CTransactionRef tx, std::string& err_string, const CAmount& highfee, bool relay, bool wait_callback, bool bypass_limits = false);
+[[nodiscard]] TransactionError BroadcastTransaction(node::NodeContext& node, CTransactionRef tx, bilingual_str& err_string, const CAmount& highfee, bool relay, bool wait_callback, bool bypass_limits = false);
 
 /**
  * Return transaction with a given hash.
@@ -57,5 +57,6 @@ static const CFeeRate DEFAULT_MAX_RAW_TX_FEE_RATE{COIN / 10};
  * @returns                    The tx if found, otherwise nullptr
  */
 CTransactionRef GetTransaction(const CBlockIndex* const block_index, const CTxMemPool* const mempool, const uint256& hash, const Consensus::Params& consensusParams, uint256& hashBlock);
+} // namespace node
 
 #endif // BITCOIN_NODE_TRANSACTION_H

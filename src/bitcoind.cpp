@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,14 +10,16 @@
 
 #include <chainparams.h>
 #include <clientversion.h>
-#include <compat.h>
+#include <compat/compat.h>
 #include <init.h>
 #include <interfaces/chain.h>
+#include <interfaces/init.h>
 #include <node/context.h>
-#include <node/ui_interface.h>
+#include <node/interface_ui.h>
 #include <noui.h>
 #include <shutdown.h>
 #include <util/check.h>
+#include <util/syserror.h>
 #include <util/system.h>
 #include <util/strencodings.h>
 #include <util/threadnames.h>
@@ -26,16 +28,14 @@
 #include <stacktraces.h>
 #include <util/url.h>
 
+#include <cstdio>
 #include <functional>
-#include <stdio.h>
+
+using node::NodeContext;
 
 const std::function<std::string(const char*)> G_TRANSLATION_FUN = nullptr;
 UrlDecodeFn* const URL_DECODE = urlDecode;
 
-//////////////////////////////////////////////////////////////////////////////
-//
-// Start
-//
 #if HAVE_DECL_FORK
 
 /** Custom implementation of daemon(). This implements the same order of operations as glibc.
@@ -109,17 +109,15 @@ int fork_daemon(bool nochdir, bool noclose, TokenPipeEnd& endpoint)
 
 #endif
 
-static bool AppInit(int argc, char* argv[])
+static bool AppInit(NodeContext& node, int argc, char* argv[])
 {
-    NodeContext node;
-
     bool fRet = false;
 
     util::ThreadSetInternalName("init");
 
     // If Qt is used, parameters/dash.conf are parsed in qt/bitcoin.cpp's main()
-    SetupServerArgs(node);
     ArgsManager& args = *Assert(node.args);
+    SetupServerArgs(args);
     std::string error;
     if (!args.ParseParameters(argc, argv, error)) {
         return InitError(Untranslated(strprintf("Error parsing command line arguments: %s\n", error)));
@@ -134,9 +132,10 @@ static bool AppInit(int argc, char* argv[])
     if (HelpRequested(args) || args.IsArgSet("-version")) {
         std::string strUsage = PACKAGE_NAME " version " + FormatFullVersion() + "\n";
 
-        if (!args.IsArgSet("-version")) {
-            strUsage += FormatParagraph(LicenseInfo()) + "\n"
-                "\nUsage:  dashd [options]                     Start " PACKAGE_NAME "\n"
+        if (args.IsArgSet("-version")) {
+            strUsage += FormatParagraph(LicenseInfo());
+        } else {
+            strUsage += "\nUsage:  dashd [options]                     Start " PACKAGE_NAME "\n"
                 "\n";
             strUsage += args.GetHelpMessage();
         }
@@ -162,7 +161,7 @@ static bool AppInit(int argc, char* argv[])
         if (!args.ReadConfigFiles(error, true)) {
             return InitError(Untranslated(strprintf("Error reading configuration file: %s\n", error)));
         }
-        // Check for -chain, -testnet or -regtest parameter (Params() calls are only valid after this clause)
+        // Check for chain settings (Params() calls are only valid after this clause)
         try {
             SelectParams(args.GetChainName());
         } catch (const std::exception& e) {
@@ -213,13 +212,13 @@ static bool AppInit(int argc, char* argv[])
                 }
                 break;
             case -1: // Error happened.
-                return InitError(Untranslated(strprintf("fork_daemon() failed: %s\n", strerror(errno))));
+                return InitError(Untranslated(strprintf("fork_daemon() failed: %s\n", SysErrorString(errno))));
             default: { // Parent: wait and exit.
                 int token = daemon_ep.TokenRead();
                 if (token) { // Success
                     exit(EXIT_SUCCESS);
                 } else { // fRet = false or token read error (premature exit).
-                    tfm::format(std::cerr, "Error during initializaton - check debug.log for details\n");
+                    tfm::format(std::cerr, "Error during initialization - check debug.log for details\n");
                     exit(EXIT_FAILURE);
                 }
             }
@@ -234,7 +233,7 @@ static bool AppInit(int argc, char* argv[])
             // If locking the data directory failed, exit immediately
             return false;
         }
-        fRet = AppInitInterfaces(node) && AppInitMain(context, node);
+        fRet = AppInitInterfaces(node) && AppInitMain(node);
     } catch (...) {
         PrintExceptionContinue(std::current_exception(), "AppInit()");
     }
@@ -264,10 +263,18 @@ MAIN_FUNCTION
     util::WinCmdLineArgs winArgs;
     std::tie(argc, argv) = winArgs.get();
 #endif
+
+    NodeContext node;
+    int exit_status;
+    std::unique_ptr<interfaces::Init> init = interfaces::MakeNodeInit(node, argc, argv, exit_status);
+    if (!init) {
+        return exit_status;
+    }
+
     SetupEnvironment();
 
     // Connect dashd signal handlers
     noui_connect();
 
-    return (AppInit(argc, argv) ? EXIT_SUCCESS : EXIT_FAILURE);
+    return (AppInit(node, argc, argv) ? EXIT_SUCCESS : EXIT_FAILURE);
 }

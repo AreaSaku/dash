@@ -1,18 +1,22 @@
-// Copyright (c) 2018-2020 The Bitcoin Core developers
+// Copyright (c) 2018-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_INTERFACES_NODE_H
 #define BITCOIN_INTERFACES_NODE_H
 
-#include <amount.h>     // For CAmount
-#include <net.h>        // For NodeId
-#include <net_types.h>  // For banmap_t
-#include <netaddress.h> // For Network
-#include <netbase.h>    // For ConnectionDirection
+#include <consensus/amount.h>          // For CAmount
+#include <net.h>                       // For NodeId
+#include <net_types.h>                 // For banmap_t
+#include <netaddress.h>                // For Network
+#include <netbase.h>                   // For ConnectionDirection
+#include <saltedhasher.h>              // For StaticSaltedHasher
 #include <support/allocators/secure.h> // For SecureString
 #include <uint256.h>
+#include <util/settings.h>             // For util::SettingsValue
 #include <util/translation.h>
+
+#include <evo/types.h>
 
 #include <functional>
 #include <memory>
@@ -20,41 +24,111 @@
 #include <stdint.h>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <vector>
 
 class BanMan;
 class CBlockIndex;
-class CCoinControl;
 class CDeterministicMNList;
 class CFeeRate;
 class CGovernanceObject;
+class CGovernanceVote;
+class CKeyID;
 class CNodeStats;
 class Coin;
+class CScript;
+class CService;
 class RPCTimerInterface;
 class UniValue;
 class Proxy;
-struct bilingual_str;
 enum class SynchronizationState;
+enum class TransactionError;
+enum vote_signal_enum_t : int;
+enum class MnType : uint16_t;
+struct bilingual_str;
 struct CNodeStateStats;
+namespace node {
 struct NodeContext;
-
-enum vote_signal_enum_t : uint8_t;
+} // namespace node
+namespace wallet {
+class CCoinControl;
+} // namespace wallet
 
 namespace interfaces {
 class Handler;
+class Wallet; // forward declaration for type-safe wallet parameter
 class WalletLoader;
 namespace CoinJoin {
 class Loader;
-} //namespsace CoinJoin
+} // namespace CoinJoin
 struct BlockTip;
+
+//! Interface for a masternode entry
+class MnEntry
+{
+public:
+    MnEntry(const CDeterministicMNCPtr& dmn) {}
+    virtual ~MnEntry() {}
+
+    MnEntry() = delete;
+
+    virtual bool isBanned() const = 0;
+    virtual CService getNetInfoPrimary() const = 0;
+    virtual MnType getType() const = 0;
+    virtual UniValue toJson() const = 0;
+    virtual const CKeyID& getKeyIdOwner() const = 0;
+    virtual const CKeyID& getKeyIdVoting() const = 0;
+    virtual const COutPoint& getCollateralOutpoint() const = 0;
+    virtual const CScript& getScriptPayout() const = 0;
+    virtual const CScript& getScriptOperatorPayout() const = 0;
+    virtual const int32_t& getLastPaidHeight() const = 0;
+    virtual const int32_t& getPoSePenalty() const = 0;
+    virtual const int32_t& getRegisteredHeight() const = 0;
+    virtual const uint16_t& getOperatorReward() const = 0;
+    virtual const uint256& getProTxHash() const = 0;
+};
+
+using MnEntryCPtr = std::shared_ptr<const MnEntry>;
+
+//! Interface for a list of masternode entries
+class MnList
+{
+public:
+    MnList(const CDeterministicMNList& mn_list) {}
+    virtual ~MnList() {}
+
+    MnList() = delete;
+
+    struct Counts {
+        size_t m_total_evo{0};
+        size_t m_total_mn{0};
+        size_t m_total_weighted{0};
+        size_t m_valid_evo{0};
+        size_t m_valid_mn{0};
+        size_t m_valid_weighted{0};
+
+        [[nodiscard]] size_t total() const { return m_total_mn + m_total_evo; }
+        [[nodiscard]] size_t enabled() const { return m_valid_mn + m_valid_evo; }
+    };
+    virtual Counts getCounts() const = 0;
+    virtual int32_t getHeight() const = 0;
+    virtual uint256 getBlockHash() const = 0;
+
+    virtual void forEachMN(bool only_valid, std::function<void(const MnEntryCPtr&)> cb) const = 0;
+    virtual std::vector<MnEntryCPtr> getProjectedMNPayees(const CBlockIndex* pindex) const = 0;
+
+    virtual void setContext(node::NodeContext* context) = 0;
+};
+
+using MnListPtr = std::shared_ptr<MnList>;
 
 //! Interface for the src/evo part of a dash node (dashd process).
 class EVO
 {
 public:
     virtual ~EVO() {}
-    virtual std::pair<CDeterministicMNList, const CBlockIndex*> getListAtChainTip() = 0;
-    virtual void setContext(NodeContext* context) {}
+    virtual std::pair<MnListPtr, const CBlockIndex*> getListAtChainTip() = 0;
+    virtual void setContext(node::NodeContext* context) {}
 };
 
 //! Interface for the src/governance part of a dash node (dashd process).
@@ -62,11 +136,45 @@ class GOV
 {
 public:
     virtual ~GOV() {}
-    virtual void getAllNewerThan(std::vector<CGovernanceObject> &objs, int64_t nMoreThanTime) = 0;
-    virtual int32_t getObjAbsYesCount(const CGovernanceObject& obj, vote_signal_enum_t vote_signal) = 0;
-    virtual bool getObjLocalValidity(const CGovernanceObject& obj, std::string& error, bool check_collateral) = 0;
+    virtual void getAllNewerThan(std::vector<CGovernanceObject> &objs, int64_t nMoreThanTime, bool include_postponed = false) = 0;
+    struct Votes {
+        int32_t m_abs{0};
+        int32_t m_no{0};
+        int32_t m_yes{0};
+    };
+    virtual Votes getObjVotes(const CGovernanceObject& obj, vote_signal_enum_t vote_signal) = 0;
+    struct UniqueVoters {
+        uint16_t m_regular{0};
+        uint16_t m_evo{0};
+    };
+    virtual UniqueVoters getObjUniqueVoters(const CGovernanceObject& obj, vote_signal_enum_t vote_signal) = 0;
+    virtual bool existsObj(const uint256& hash) = 0;
     virtual bool isEnabled() = 0;
-    virtual void setContext(NodeContext* context) {}
+    virtual bool processVoteAndRelay(const CGovernanceVote& vote, std::string& error) = 0;
+    struct GovernanceInfo {
+        CAmount proposalfee{0};
+        int superblockcycle{0};
+        int superblockmaturitywindow{0};
+        int lastsuperblock{0};
+        int nextsuperblock{0};
+        int fundingthreshold{0};
+        CAmount governancebudget{0};
+        int64_t targetSpacing{0};
+        int relayRequiredConfs{1};
+        int requiredConfs{6};
+    };
+    virtual GovernanceInfo getGovernanceInfo() = 0;
+    virtual std::optional<int32_t> getProposalFundedHeight(const uint256& proposal_hash) = 0;
+    struct FundableResult {
+        std::unordered_set<uint256, StaticSaltedHasher> hashes;
+        CAmount allocated{0};
+    };
+    virtual FundableResult getFundableProposalHashes() = 0;
+    virtual std::optional<CGovernanceObject> createProposal(int32_t revision, int64_t created_time,
+                                const std::string& data_hex, std::string& error) = 0;
+    virtual bool submitProposal(const uint256& parent, int32_t revision, int64_t created_time, const std::string& data_hex,
+                                const uint256& fee_txid, std::string& out_object_hash, std::string& error) = 0;
+    virtual void setContext(node::NodeContext* context) {}
 };
 
 //! Interface for the src/llmq part of a dash node (dashd process).
@@ -74,8 +182,37 @@ class LLMQ
 {
 public:
     virtual ~LLMQ() {}
-    virtual size_t getInstantSentLockCount() = 0;
-    virtual void setContext(NodeContext* context) {}
+    struct ChainLockInfo {
+        int32_t m_height{0};
+        int64_t m_block_time{0};
+        uint256 m_hash{};
+    };
+    virtual ChainLockInfo getBestChainLock() = 0;
+    struct CreditPoolCounts {
+        CAmount m_diff{0};
+        CAmount m_limit{0};
+        CAmount m_locked{0};
+    };
+    virtual CreditPoolCounts getCreditPoolCounts() = 0;
+    struct InstantSendCounts {
+        size_t m_verified{0};
+        size_t m_unverified{0};
+        size_t m_awaiting_tx{0};
+        size_t m_unprotected_tx{0};
+    };
+    virtual InstantSendCounts getInstantSendCounts() = 0;
+    virtual size_t getPendingAssetUnlocks() = 0;
+    struct QuorumInfo {
+        std::string m_name;
+        size_t m_count{0};
+        double m_health{0.0};
+        bool m_rotates{false};
+        int32_t m_data_retention_blocks{0};
+        int32_t m_newest_height{0};
+        int32_t m_expiry_height{0};
+    };
+    virtual std::vector<QuorumInfo> getQuorumStats() = 0;
+    virtual void setContext(node::NodeContext* context) {}
 };
 
 //! Interface for the src/masternode part of a dash node (dashd process).
@@ -86,9 +223,10 @@ class Sync
 public:
     virtual ~Sync() {}
     virtual bool isBlockchainSynced() = 0;
+    virtual bool isGovernanceSynced() = 0;
     virtual bool isSynced() = 0;
     virtual std::string getSyncStatus() =  0;
-    virtual void setContext(NodeContext* context) {}
+    virtual void setContext(node::NodeContext* context) {}
 };
 }
 
@@ -134,6 +272,16 @@ struct BlockAndHeaderTipInfo
     double verification_progress;
 };
 
+//! External signer interface used by the GUI.
+class ExternalSigner
+{
+public:
+    virtual ~ExternalSigner() {};
+
+    //! Get signer display name
+    virtual std::string getName() = 0;
+};
+
 //! Top-level interface for a dash node (dashd process).
 class Node
 {
@@ -170,6 +318,24 @@ public:
     //! Return whether shutdown was requested.
     virtual bool shutdownRequested() = 0;
 
+    //! Return whether a particular setting in <datadir>/settings.json is or
+    //! would be ignored because it is also specified in the command line.
+    virtual bool isSettingIgnored(const std::string& name) = 0;
+
+    //! Return setting value from <datadir>/settings.json or dash.conf.
+    virtual util::SettingsValue getPersistentSetting(const std::string& name) = 0;
+
+    //! Update a setting in <datadir>/settings.json.
+    virtual void updateRwSetting(const std::string& name, const util::SettingsValue& value) = 0;
+
+    //! Force a setting value to be applied, overriding any other configuration
+    //! source, but not being persisted.
+    virtual void forceSetting(const std::string& name, const util::SettingsValue& value) = 0;
+
+    //! Clear all settings in <datadir>/settings.json and store a backup of
+    //! previous settings in <datadir>/settings.json.bak.
+    virtual void resetSettings() = 0;
+
     //! Map port.
     virtual void mapPort(bool use_upnp, bool use_natpmp) = 0;
 
@@ -198,6 +364,9 @@ public:
     //! Disconnect node by id.
     virtual bool disconnectById(NodeId id) = 0;
 
+    //! Return list of external signers (attached devices which can sign transactions).
+    virtual std::vector<std::unique_ptr<ExternalSigner>> listExternalSigners() = 0;
+
     //! Get total bytes recv.
     virtual int64_t getTotalBytesRecv() = 0;
 
@@ -210,11 +379,17 @@ public:
     //! Get mempool dynamic usage.
     virtual size_t getMempoolDynamicUsage() = 0;
 
+    //! Get mempool maximum memory usage.
+    virtual size_t getMempoolMaxUsage() = 0;
+
     //! Get header tip height and time.
     virtual bool getHeaderTip(int& height, int64_t& block_time) = 0;
 
     //! Get num blocks.
     virtual int getNumBlocks() = 0;
+
+    //! Get network local addresses.
+    virtual std::map<CNetAddr, LocalServiceInfo> getNetLocalAddresses() = 0;
 
     //! Get best block hash.
     virtual uint256 getBestBlockHash() = 0;
@@ -234,11 +409,8 @@ public:
     //! Is masternode.
     virtual bool isMasternode() = 0;
 
-    //! Get reindex.
-    virtual bool getReindex() = 0;
-
-    //! Get importing.
-    virtual bool getImporting() = 0;
+    //! Is loading blocks.
+    virtual bool isLoadingBlocks() = 0;
 
     //! Set network active.
     virtual void setNetworkActive(bool active) = 0;
@@ -253,7 +425,7 @@ public:
     virtual UniValue executeRpc(const std::string& command, const UniValue& params, const std::string& uri) = 0;
 
     //! List rpc commands.
-    virtual std::vector<std::pair<std::string, std::string>> listRpcCommands() = 0;
+    virtual std::vector<std::string> listRpcCommands() = 0;
 
     //! Set RPC timer interface if unset.
     virtual void rpcSetTimerInterfaceIfUnset(RPCTimerInterface* iface) = 0;
@@ -263,6 +435,9 @@ public:
 
     //! Get unspent outputs associated with a transaction.
     virtual bool getUnspentOutput(const COutPoint& output, Coin& coin) = 0;
+
+    //! Broadcast transaction.
+    virtual TransactionError broadcastTransaction(CTransactionRef tx, CAmount max_tx_fee, bilingual_str& err_string) = 0;
 
     //! Get wallet loader.
     virtual WalletLoader& walletLoader() = 0;
@@ -305,6 +480,10 @@ public:
     using ShowProgressFn = std::function<void(const std::string& title, int progress, bool resume_possible)>;
     virtual std::unique_ptr<Handler> handleShowProgress(ShowProgressFn fn) = 0;
 
+    //! Register handler for wallet client constructed messages.
+    using InitWalletFn = std::function<void()>;
+    virtual std::unique_ptr<Handler> handleInitWallet(InitWalletFn fn) = 0;
+
     //! Register handler for number of connections changed messages.
     using NotifyNumConnectionsChangedFn = std::function<void(int new_num_connections)>;
     virtual std::unique_ptr<Handler> handleNotifyNumConnectionsChanged(NotifyNumConnectionsChangedFn fn) = 0;
@@ -336,6 +515,14 @@ public:
         std::function<void(SynchronizationState, interfaces::BlockTip tip, double verification_progress)>;
     virtual std::unique_ptr<Handler> handleNotifyHeaderTip(NotifyHeaderTipFn fn) = 0;
 
+    //! Register handler for InstantSend data messages.
+    using NotifyInstantSendChangedFn = std::function<void()>;
+    virtual std::unique_ptr<Handler> handleNotifyInstantSendChanged(NotifyInstantSendChangedFn fn) = 0;
+
+    //! Register handler for governance data messages.
+    using NotifyGovernanceChangedFn = std::function<void()>;
+    virtual std::unique_ptr<Handler> handleNotifyGovernanceChanged(NotifyGovernanceChangedFn fn) = 0;
+
     //! Register handler for masternode list update messages.
     using NotifyMasternodeListChangedFn =
         std::function<void(const CDeterministicMNList& newList,
@@ -349,12 +536,12 @@ public:
 
     //! Get and set internal node context. Useful for testing, but not
     //! accessible across processes.
-    virtual NodeContext* context() { return nullptr; }
-    virtual void setContext(NodeContext* context) { }
+    virtual node::NodeContext* context() { return nullptr; }
+    virtual void setContext(node::NodeContext* context) { }
 };
 
 //! Return implementation of Node interface.
-std::unique_ptr<Node> MakeNode(NodeContext* context = nullptr);
+std::unique_ptr<Node> MakeNode(node::NodeContext& context);
 
 //! Block tip (could be a header or not, depends on the subscribed signal).
 struct BlockTip {

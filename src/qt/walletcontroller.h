@@ -1,10 +1,11 @@
-// Copyright (c) 2019-2020 The Bitcoin Core developers
+// Copyright (c) 2019-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_QT_WALLETCONTROLLER_H
 #define BITCOIN_QT_WALLETCONTROLLER_H
 
+#include <interfaces/wallet.h>
 #include <qt/sendcoinsrecipient.h>
 #include <support/allocators/secure.h>
 #include <sync.h>
@@ -15,11 +16,9 @@
 #include <string>
 #include <vector>
 
-#include <QMessageBox>
 #include <QMutex>
-#include <QProgressDialog>
+#include <QPointer>
 #include <QThread>
-#include <QTimer>
 #include <QString>
 
 class ClientModel;
@@ -32,6 +31,10 @@ class Handler;
 class Node;
 class Wallet;
 } // namespace interfaces
+
+namespace fs {
+class path;
+}
 
 class AskPassphraseDialog;
 class CreateWalletActivity;
@@ -51,9 +54,6 @@ class WalletController : public QObject
 public:
     WalletController(ClientModel& client_model, QObject* parent);
     ~WalletController();
-
-    //! Returns wallet models currently open.
-    std::vector<WalletModel*> getOpenWallets() const;
 
     WalletModel* getOrCreateWallet(std::unique_ptr<interfaces::Wallet> wallet);
 
@@ -89,7 +89,7 @@ class WalletControllerActivity : public QObject
 
 public:
     WalletControllerActivity(WalletController* wallet_controller, QWidget* parent_widget);
-    virtual ~WalletControllerActivity();
+    virtual ~WalletControllerActivity() = default;
 
 Q_SIGNALS:
     void finished();
@@ -98,12 +98,10 @@ protected:
     interfaces::Node& node() const { return m_wallet_controller->m_node; }
     QObject* worker() const { return m_wallet_controller->m_activity_worker; }
 
-    void showProgressDialog(const QString& label_text);
-    void destroyProgressDialog();
+    void showProgressDialog(const QString& title_text, const QString& label_text, bool show_minimized=false);
 
     WalletController* const m_wallet_controller;
     QWidget* const m_parent_widget;
-    QProgressDialog* m_progress_dialog{nullptr};
     WalletModel* m_wallet_model{nullptr};
     bilingual_str m_error_message;
     std::vector<bilingual_str> m_warning_message;
@@ -147,6 +145,52 @@ Q_SIGNALS:
 
 private:
     void finish();
+};
+
+class LoadWalletsActivity : public WalletControllerActivity
+{
+    Q_OBJECT
+
+public:
+    LoadWalletsActivity(WalletController* wallet_controller, QWidget* parent_widget);
+
+    void load(bool show_loading_minimized);
+};
+
+class RestoreWalletActivity : public WalletControllerActivity
+{
+    Q_OBJECT
+
+public:
+    RestoreWalletActivity(WalletController* wallet_controller, QWidget* parent_widget);
+
+    void restore(const fs::path& backup_file, const std::string& wallet_name);
+
+Q_SIGNALS:
+    void restored(WalletModel* wallet_model);
+
+private:
+    void finish();
+};
+
+class RescanWalletActivity : public WalletControllerActivity
+{
+    Q_OBJECT
+
+public:
+    RescanWalletActivity(WalletController* wallet_controller, QWidget* parent_widget);
+
+    void rescan(WalletModel* wallet_model, bool from_genesis);
+
+Q_SIGNALS:
+    void rescanComplete();
+    void rescanFailed();
+
+private:
+    void finish();
+
+    QPointer<WalletModel> m_rescan_wallet_model;
+    wallet::RescanStatus m_rescan_status{};
 };
 
 #endif // BITCOIN_QT_WALLETCONTROLLER_H

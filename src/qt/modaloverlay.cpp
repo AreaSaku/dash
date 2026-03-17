@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2020 The Bitcoin Core developers
+// Copyright (c) 2016-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,19 +7,15 @@
 
 #include <chainparams.h>
 #include <qt/guiutil.h>
+#include <qt/guiutil_font.h>
 
 #include <QEasingCurve>
-#include <QPropertyAnimation>
 #include <QResizeEvent>
 
-ModalOverlay::ModalOverlay(bool enable_wallet, QWidget *parent) :
-QWidget(parent),
-ui(new Ui::ModalOverlay),
-bestHeaderHeight(0),
-bestHeaderDate(QDateTime()),
-layerIsVisible(false),
-userClosed(false),
-foreverHidden(false)
+ModalOverlay::ModalOverlay(bool enable_wallet, QWidget* parent)
+    : QWidget(parent),
+      ui(new Ui::ModalOverlay),
+      bestHeaderDate(QDateTime())
 {
     ui->setupUi(this);
 
@@ -29,7 +25,7 @@ foreverHidden(false)
                       ui->labelSyncDone,
                       ui->labelProgressIncrease,
                       ui->labelEstimatedTimeLeft,
-                     }, GUIUtil::FontWeight::Bold);
+                     }, {GUIUtil::FontWeight::Bold});
 
     ui->warningIcon->setPixmap(GUIUtil::getIcon("warning", GUIUtil::ThemedColor::ORANGE).pixmap(48, 48));
 
@@ -38,6 +34,7 @@ foreverHidden(false)
         parent->installEventFilter(this);
         raise();
     }
+    ui->closeButton->installEventFilter(this);
 
     blockProcessTime.clear();
     setVisible(false);
@@ -75,6 +72,11 @@ bool ModalOverlay::eventFilter(QObject * obj, QEvent * ev) {
             raise();
         }
     }
+
+    if (obj == ui->closeButton && ev->type() == QEvent::FocusOut && layerIsVisible) {
+        ui->closeButton->setFocus(Qt::OtherFocusReason);
+    }
+
     return QWidget::eventFilter(obj, ev);
 }
 
@@ -195,6 +197,10 @@ void ModalOverlay::showHide(bool hide, bool userRequested)
     m_animation.setEndValue(QPoint(0, hide ? height() : 0));
     m_animation.start(QAbstractAnimation::KeepWhenStopped);
     layerIsVisible = !hide;
+
+    if (layerIsVisible) {
+        ui->closeButton->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void ModalOverlay::closeClicked()

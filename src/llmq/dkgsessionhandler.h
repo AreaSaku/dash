@@ -1,34 +1,42 @@
-// Copyright (c) 2018-2024 The Dash Core developers
+// Copyright (c) 2018-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_LLMQ_DKGSESSIONHANDLER_H
 #define BITCOIN_LLMQ_DKGSESSIONHANDLER_H
 
-#include <ctpl_stl.h>
-#include <net.h>
+#include <msg_result.h>
 
-#include <gsl/pointers.h>
+#include <net.h> // for NodeId
+#include <net_processing.h>
+#include <protocol.h>
+#include <serialize.h>
+#include <streams.h>
+#include <sync.h>
+#include <uint256.h>
 
-#include <atomic>
+#include <list>
 #include <map>
-#include <optional>
+#include <memory>
+#include <set>
+#include <string_view>
+#include <vector>
 
-class CActiveMasternodeManager;
 class CBlockIndex;
-class CBLSWorker;
-class CChainState;
-class CDeterministicMNManager;
-class CMasternodeMetaMan;
-class CSporkManager;
+class CConnman;
 class PeerManager;
+
+namespace Consensus {
+struct LLMQParams;
+} // namespace Consensus
 
 namespace llmq
 {
-class CDKGDebugManager;
-class CDKGSession;
+class CDKGContribution;
+class CDKGComplaint;
+class CDKGJustification;
+class CDKGPrematureCommitment;
 class CDKGSessionManager;
-class CQuorumBlockProcessor;
 
 enum class QuorumPhase {
     Initialized = 1,
@@ -54,8 +62,7 @@ public:
     using BinaryMessage = std::pair<NodeId, std::shared_ptr<CDataStream>>;
 
 private:
-    std::atomic<PeerManager*> m_peerman{nullptr};
-    const int invType;
+    const uint32_t invType;
     const size_t maxMessagesPerNode;
     mutable Mutex cs_messages;
     std::list<BinaryMessage> pendingMessages GUARDED_BY(cs_messages);
@@ -63,26 +70,28 @@ private:
     std::set<uint256> seenMessages GUARDED_BY(cs_messages);
 
 public:
-    explicit CDKGPendingMessages(size_t _maxMessagesPerNode, int _invType) :
+    explicit CDKGPendingMessages(size_t _maxMessagesPerNode, uint32_t _invType) :
             invType(_invType), maxMessagesPerNode(_maxMessagesPerNode) {};
 
-    void PushPendingMessage(NodeId from, PeerManager* peerman, CDataStream& vRecv);
-    std::list<BinaryMessage> PopPendingMessages(size_t maxCount);
-    bool HasSeen(const uint256& hash) const;
-    void Misbehaving(NodeId from, int score);
-    void Clear();
+    [[nodiscard]] MessageProcessingResult PushPendingMessage(NodeId from, CDataStream& vRecv)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_messages);
+    std::list<BinaryMessage> PopPendingMessages(size_t maxCount) EXCLUSIVE_LOCKS_REQUIRED(!cs_messages);
+    bool HasSeen(const uint256& hash) const EXCLUSIVE_LOCKS_REQUIRED(!cs_messages);
+    void Misbehaving(NodeId from, int score, PeerManager& peerman);
+    void Clear() EXCLUSIVE_LOCKS_REQUIRED(!cs_messages);
 
-    template<typename Message>
-    void PushPendingMessage(NodeId from, PeerManager* peerman, Message& msg)
+    template <typename Message>
+    void PushPendingMessage(NodeId from, Message& msg, PeerManager& peerman) EXCLUSIVE_LOCKS_REQUIRED(!cs_messages)
     {
         CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
         ds << msg;
-        PushPendingMessage(from, peerman, ds);
+        peerman.PostProcessMessage(PushPendingMessage(from, ds), from);
     }
 
     // Might return nullptr messages, which indicates that deserialization failed for some reason
-    template<typename Message>
+    template <typename Message>
     std::vector<std::pair<NodeId, std::shared_ptr<Message>>> PopAndDeserializeMessages(size_t maxCount)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_messages)
     {
         auto binaryMessages = PopPendingMessages(maxCount);
         if (binaryMessages.empty()) {
@@ -116,31 +125,8 @@ class CDKGSessionHandler
 private:
     friend class CDKGSessionManager;
 
-private:
-    std::atomic<bool> stopRequested{false};
-
-    CBLSWorker& blsWorker;
-    CChainState& m_chainstate;
-    CConnman& connman;
-    CDeterministicMNManager& m_dmnman;
-    CDKGDebugManager& dkgDebugManager;
-    CDKGSessionManager& dkgManager;
-    CMasternodeMetaMan& m_mn_metaman;
-    CQuorumBlockProcessor& quorumBlockProcessor;
-    const CActiveMasternodeManager* const m_mn_activeman;
-    const CSporkManager& m_sporkman;
-    const std::unique_ptr<PeerManager>& m_peerman;
-    const Consensus::LLMQParams params;
-    const int quorumIndex;
-
-    std::atomic<int> currentHeight {-1};
-    mutable Mutex cs_phase_qhash;
-    QuorumPhase phase GUARDED_BY(cs_phase_qhash) {QuorumPhase::Idle};
-    uint256 quorumHash GUARDED_BY(cs_phase_qhash);
-
-    std::unique_ptr<CDKGSession> curSession;
-    std::thread phaseHandlerThread;
-    std::string m_thread_name;
+protected:
+    const Consensus::LLMQParams& params;
 
     // Do not guard these, they protect their internals themselves
     CDKGPendingMessages pendingContributions;
@@ -149,39 +135,21 @@ private:
     CDKGPendingMessages pendingPrematureCommitments;
 
 public:
-    CDKGSessionHandler(CBLSWorker& _blsWorker, CChainState& chainstate, CConnman& _connman, CDeterministicMNManager& dmnman,
-                       CDKGDebugManager& _dkgDebugManager, CDKGSessionManager& _dkgManager, CMasternodeMetaMan& mn_metaman,
-                       CQuorumBlockProcessor& _quorumBlockProcessor, const CActiveMasternodeManager* const mn_activeman,
-                       const CSporkManager& sporkman, const std::unique_ptr<PeerManager>& peerman, const Consensus::LLMQParams& _params, int _quorumIndex);
-    ~CDKGSessionHandler() = default;
+    explicit CDKGSessionHandler(const Consensus::LLMQParams& _params);
+    virtual ~CDKGSessionHandler();
 
-    void UpdatedBlockTip(const CBlockIndex *pindexNew);
-    void ProcessMessage(const CNode& pfrom, gsl::not_null<PeerManager*> peerman, const std::string& msg_type, CDataStream& vRecv);
+    [[nodiscard]] MessageProcessingResult ProcessMessage(NodeId from, std::string_view msg_type, CDataStream& vRecv);
 
-    void StartThread();
-    void StopThread();
-
-private:
-    bool InitNewQuorum(const CBlockIndex* pQuorumBaseBlockIndex);
-
-    std::pair<QuorumPhase, uint256> GetPhaseAndQuorumHash() const;
-
-    using StartPhaseFunc = std::function<void()>;
-    using WhileWaitFunc = std::function<bool()>;
-    /**
-     * @param curPhase current QuorumPhase
-     * @param nextPhase next QuorumPhase
-     * @param expectedQuorumHash expected QuorumHash, defaults to null
-     * @param shouldNotWait function that returns bool, defaults to function that returns false. If the function returns false, we will wait in the loop, if true, we don't wait
-     */
-    void WaitForNextPhase(std::optional<QuorumPhase> curPhase, QuorumPhase nextPhase, const uint256& expectedQuorumHash=uint256(), const WhileWaitFunc& shouldNotWait=[]{return false;}) const;
-    void WaitForNewQuorum(const uint256& oldQuorumHash) const;
-    void SleepBeforePhase(QuorumPhase curPhase, const uint256& expectedQuorumHash, double randomSleepFactor, const WhileWaitFunc& runWhileWaiting) const;
-    void HandlePhase(QuorumPhase curPhase, QuorumPhase nextPhase, const uint256& expectedQuorumHash, double randomSleepFactor, const StartPhaseFunc& startPhaseFunc, const WhileWaitFunc& runWhileWaiting);
-    void HandleDKGRound();
-    void PhaseHandlerThread();
+public:
+    virtual bool GetContribution(const uint256& hash, CDKGContribution& ret) const { return false; }
+    virtual bool GetComplaint(const uint256& hash, CDKGComplaint& ret) const { return false; }
+    virtual bool GetJustification(const uint256& hash, CDKGJustification& ret) const { return false; }
+    virtual bool GetPrematureCommitment(const uint256& hash, CDKGPrematureCommitment& ret) const { return false; }
+    virtual QuorumPhase GetPhase() const { return QuorumPhase::Idle; }
+    virtual void StartThread(CConnman& connman, PeerManager& peerman) {}
+    virtual void StopThread() {}
+    virtual void UpdatedBlockTip(const CBlockIndex* pindexNew) {}
 };
-
 } // namespace llmq
 
 #endif // BITCOIN_LLMQ_DKGSESSIONHANDLER_H

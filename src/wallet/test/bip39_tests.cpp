@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,6 +7,7 @@
 #include <wallet/bip39.h>
 #include <key.h>
 #include <key_io.h>
+#include <test/util/json.h>
 #include <test/util/setup_common.h>
 #include <util/strencodings.h>
 
@@ -14,9 +15,7 @@
 
 #include <univalue.h>
 
-// In script_tests.cpp
-extern UniValue read_json(const std::string& jsondata);
-
+namespace wallet {
 BOOST_FIXTURE_TEST_SUITE(bip39_tests, BasicTestingSetup)
 
 // https://github.com/trezor/python-mnemonic/blob/b502451a33a440783926e04428115e0bed87d01f/vectors.json
@@ -26,7 +25,7 @@ BOOST_AUTO_TEST_CASE(bip39_vectors)
 
     for (unsigned int i = 0; i < tests.size(); i++) {
         // printf("%d\n", i);
-        UniValue test = tests[i];
+        const UniValue& test = tests[i];
         std::string strTest = test.write();
         if (test.size() < 4) // Allow for extra stuff (useful for comments)
         {
@@ -54,7 +53,7 @@ BOOST_AUTO_TEST_CASE(bip39_vectors)
         CExtKey key;
         CExtPubKey pubkey;
 
-        key.SetSeed(seed);
+        key.SetSeed(MakeByteSpan(seed));
         pubkey = key.Neuter();
 
         // printf("CBitcoinExtKey: %s\n", EncodeExtKey(key).c_str());
@@ -63,3 +62,4 @@ BOOST_AUTO_TEST_CASE(bip39_vectors)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+} // namespace wallet

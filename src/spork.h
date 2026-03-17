@@ -1,9 +1,11 @@
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_SPORK_H
 #define BITCOIN_SPORK_H
+
+#include <msg_result.h>
 
 #include <hash.h>
 #include <key.h>
@@ -25,7 +27,6 @@ template<typename T>
 class CFlatDB;
 class CNode;
 class CDataStream;
-class PeerManager;
 
 class CSporkMessage;
 class CSporkManager;
@@ -42,7 +43,7 @@ enum SporkId : int32_t {
     SPORK_19_CHAINLOCKS_ENABLED                            = 10018,
     SPORK_21_QUORUM_ALL_CONNECTED                          = 10020,
     SPORK_23_QUORUM_POSE                                   = 10022,
-    SPORK_24_TEST_EHF                                      = 10023,
+    // SPORK_24_DEPRECATED = 10023,
 
     SPORK_INVALID                                          = -1,
 };
@@ -68,7 +69,7 @@ struct CSporkDef
 };
 
 #define MAKE_SPORK_DEF(name, defaultValue) CSporkDef{name, defaultValue, #name}
-[[maybe_unused]] static constexpr std::array<CSporkDef, 8> sporkDefs = {
+[[maybe_unused]] static constexpr std::array<CSporkDef, 7> sporkDefs = {
     MAKE_SPORK_DEF(SPORK_2_INSTANTSEND_ENABLED,            4070908800ULL), // OFF
     MAKE_SPORK_DEF(SPORK_3_INSTANTSEND_BLOCK_FILTERING,    4070908800ULL), // OFF
     MAKE_SPORK_DEF(SPORK_9_SUPERBLOCKS_ENABLED,            4070908800ULL), // OFF
@@ -76,7 +77,6 @@ struct CSporkDef
     MAKE_SPORK_DEF(SPORK_19_CHAINLOCKS_ENABLED,            4070908800ULL), // OFF
     MAKE_SPORK_DEF(SPORK_21_QUORUM_ALL_CONNECTED,          4070908800ULL), // OFF
     MAKE_SPORK_DEF(SPORK_23_QUORUM_POSE,                   4070908800ULL), // OFF
-    MAKE_SPORK_DEF(SPORK_24_TEST_EHF,                      4070908800ULL), // OFF
 };
 #undef MAKE_SPORK_DEF
 
@@ -152,11 +152,6 @@ public:
      * in order to identify which spork key signed this message.
      */
     std::optional<CKeyID> GetSignerKeyID() const;
-
-    /**
-     * Relay is used to send this spork message to other peers.
-     */
-    void Relay(PeerManager& peerman) const;
 };
 
 class SporkStore
@@ -166,7 +161,7 @@ protected:
 
     mutable Mutex cs;
 
-    std::unordered_map<uint256, CSporkMessage, StaticSaltedHasher> mapSporksByHash GUARDED_BY(cs);
+    Uint256HashMap<CSporkMessage> mapSporksByHash GUARDED_BY(cs);
     std::unordered_map<SporkId, std::map<CKeyID, CSporkMessage> > mapSporksActive GUARDED_BY(cs);
 
 public:
@@ -221,11 +216,11 @@ private:
     const std::unique_ptr<db_type> m_db;
     bool is_valid{false};
 
-    mutable Mutex cs_mapSporksCachedActive;
-    mutable std::unordered_map<const SporkId, bool> mapSporksCachedActive GUARDED_BY(cs_mapSporksCachedActive);
-
-    mutable Mutex cs_mapSporksCachedValues;
-    mutable std::unordered_map<SporkId, SporkValue> mapSporksCachedValues GUARDED_BY(cs_mapSporksCachedValues);
+    // TODO: drop mutex cs_cache completely so far as sporks are used on testnet only
+    // and simplify IsSporkActive to avoid any mutex for better mainnet performance
+    mutable Mutex cs_cache;
+    mutable std::unordered_map<SporkId, bool> mapSporksCachedActive GUARDED_BY(cs_cache);
+    mutable std::unordered_map<SporkId, SporkValue> mapSporksCachedValues GUARDED_BY(cs_cache);
 
     std::set<CKeyID> setSporkPubKeyIDs GUARDED_BY(cs);
     int nMinSporkKeys GUARDED_BY(cs) {std::numeric_limits<int>::max()};
@@ -235,9 +230,11 @@ private:
      * SporkValueIfActive is used to get the value agreed upon by the majority
      * of signed spork messages for a given Spork ID.
      */
-    std::optional<SporkValue> SporkValueIfActive(SporkId nSporkID) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    std::optional<SporkValue> SporkValueIfActive(SporkId nSporkID) const EXCLUSIVE_LOCKS_REQUIRED(cs, !cs_cache);
 
 public:
+    CSporkManager(const CSporkManager&) = delete;
+    CSporkManager& operator=(const CSporkManager&) = delete;
     CSporkManager();
     ~CSporkManager();
 
@@ -258,7 +255,8 @@ public:
     /**
      * ProcessMessage is used to call ProcessSpork and ProcessGetSporks. See below
      */
-    PeerMsgRet ProcessMessage(CNode& peer, CConnman& connman, PeerManager& peerman, std::string_view msg_type, CDataStream& vRecv);
+    [[nodiscard]] MessageProcessingResult ProcessMessage(CNode& peer, CConnman& connman, std::string_view msg_type,
+                                                         CDataStream& vRecv) EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     /**
      * ProcessSpork is used to handle the 'spork' p2p message.
@@ -266,7 +264,8 @@ public:
      * For 'spork', it validates the spork and adds it to the internal spork storage and
      * performs any necessary processing.
      */
-    PeerMsgRet ProcessSpork(const CNode& peer, PeerManager& peerman, CDataStream& vRecv) EXCLUSIVE_LOCKS_REQUIRED(!cs);
+    [[nodiscard]] MessageProcessingResult ProcessSpork(NodeId from, CDataStream& vRecv)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs, !cs_cache);
 
     /**
      * ProcessGetSporks is used to handle the 'getsporks' p2p message.
@@ -277,9 +276,10 @@ public:
 
     /**
      * UpdateSpork is used by the spork RPC command to set a new spork value, sign
-     * and broadcast the spork message.
+     * and return the spork message, ready for network relay.
+     * It returns nullopt if nothing to relay
      */
-    bool UpdateSpork(PeerManager& peerman, SporkId nSporkID, SporkValue nValue) EXCLUSIVE_LOCKS_REQUIRED(!cs);
+    std::optional<CInv> UpdateSpork(SporkId nSporkID, SporkValue nValue) EXCLUSIVE_LOCKS_REQUIRED(!cs, !cs_cache);
 
     /**
      * IsSporkActive returns a bool for time-based sporks, and should be used
@@ -289,13 +289,13 @@ public:
      * instead, and therefore this method doesn't make sense and should not be
      * used.
      */
-    bool IsSporkActive(SporkId nSporkID) const;
+    bool IsSporkActive(SporkId nSporkID) const EXCLUSIVE_LOCKS_REQUIRED(!cs_cache);
 
     /**
      * GetSporkValue returns the spork value given a Spork ID. If no active spork
      * message has yet been received by the node, it returns the default value.
      */
-    SporkValue GetSporkValue(SporkId nSporkID) const EXCLUSIVE_LOCKS_REQUIRED(!cs);
+    SporkValue GetSporkValue(SporkId nSporkID) const EXCLUSIVE_LOCKS_REQUIRED(!cs, !cs_cache);
 
     /**
      * GetSporkIDByName returns the internal Spork ID given the spork name.

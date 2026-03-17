@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,11 +6,16 @@
 #include <flat-database.h>
 #include <netfulfilledman.h>
 #include <shutdown.h>
-#include <util/system.h>
 
 CNetFulfilledRequestManager::CNetFulfilledRequestManager() :
     m_db{std::make_unique<db_type>("netfulfilled.dat", "magicFulfilledCache")}
 {
+}
+
+CNetFulfilledRequestManager::~CNetFulfilledRequestManager()
+{
+    if (!is_valid) return;
+    m_db->Store(*this);
 }
 
 bool CNetFulfilledRequestManager::LoadCache(bool load_cache)
@@ -23,24 +28,16 @@ bool CNetFulfilledRequestManager::LoadCache(bool load_cache)
     return is_valid;
 }
 
-CNetFulfilledRequestManager::~CNetFulfilledRequestManager()
-{
-    if (!is_valid) return;
-    m_db->Store(*this);
-}
-
 void CNetFulfilledRequestManager::AddFulfilledRequest(const CService& addr, const std::string& strRequest)
 {
     LOCK(cs_mapFulfilledRequests);
-    CService addrSquashed = Params().AllowMultiplePorts() ? addr : CService(addr, 0);
-    mapFulfilledRequests[addrSquashed][strRequest] = GetTime() + Params().FulfilledRequestExpireTime();
+    mapFulfilledRequests[addr][strRequest] = GetTime() + Params().FulfilledRequestExpireTime();
 }
 
 bool CNetFulfilledRequestManager::HasFulfilledRequest(const CService& addr, const std::string& strRequest)
 {
     LOCK(cs_mapFulfilledRequests);
-    CService addrSquashed = Params().AllowMultiplePorts() ? addr : CService(addr, 0);
-    fulfilledreqmap_t::iterator it = mapFulfilledRequests.find(addrSquashed);
+    fulfilledreqmap_t::iterator it = mapFulfilledRequests.find(addr);
 
     return  it != mapFulfilledRequests.end() &&
             it->second.find(strRequest) != it->second.end() &&
@@ -50,8 +47,7 @@ bool CNetFulfilledRequestManager::HasFulfilledRequest(const CService& addr, cons
 void CNetFulfilledRequestManager::RemoveAllFulfilledRequests(const CService& addr)
 {
     LOCK(cs_mapFulfilledRequests);
-    CService addrSquashed = Params().AllowMultiplePorts() ? addr : CService(addr, 0);
-    fulfilledreqmap_t::iterator it = mapFulfilledRequests.find(addrSquashed);
+    fulfilledreqmap_t::iterator it = mapFulfilledRequests.find(addr);
 
     if (it != mapFulfilledRequests.end()) {
         mapFulfilledRequests.erase(it++);
@@ -90,9 +86,7 @@ void NetFulfilledRequestStore::Clear()
 
 std::string NetFulfilledRequestStore::ToString() const
 {
-    std::ostringstream info;
-    info << "Nodes with fulfilled requests: " << (int)mapFulfilledRequests.size();
-    return info.str();
+    return strprintf("Nodes with fulfilled requests: %d", mapFulfilledRequests.size());
 }
 
 void CNetFulfilledRequestManager::DoMaintenance()

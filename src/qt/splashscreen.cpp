@@ -1,5 +1,5 @@
-// Copyright (c) 2011-2020 The Bitcoin Core developers
-// Copyright (c) 2014-2024 The Dash Core developers
+// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -16,6 +16,7 @@
 #include <interfaces/node.h>
 #include <interfaces/wallet.h>
 #include <qt/guiutil.h>
+#include <qt/guiutil_font.h>
 #include <qt/networkstyle.h>
 #include <qt/walletmodel.h>
 #include <util/system.h>
@@ -29,8 +30,8 @@
 #include <QScreen>
 
 
-SplashScreen::SplashScreen(const NetworkStyle *networkStyle) :
-    QWidget(), curAlignment(0)
+SplashScreen::SplashScreen(const NetworkStyle* networkStyle)
+    : QWidget()
 {
 
     // transparent background
@@ -56,7 +57,7 @@ SplashScreen::SplashScreen(const NetworkStyle *networkStyle) :
     // define text to place
     QString titleText       = PACKAGE_NAME;
     QString versionText = QString::fromStdString(FormatFullVersion()).remove(0, 1);
-    QString titleAddText    = networkStyle->getTitleAddText();
+    const QString& titleAddText = networkStyle->getTitleAddText();
 
     QFont fontNormal = GUIUtil::getFontNormal();
     QFont fontBold = GUIUtil::getFontBold();
@@ -117,8 +118,7 @@ SplashScreen::SplashScreen(const NetworkStyle *networkStyle) :
         int titleAddTextWidth = GUIUtil::TextWidth(fm, titleAddText);
         // Draw the badge background with the network-specific color
         QRect badgeRect = QRect(width - titleAddTextWidth - 20, 5, width, fm.height() + 10);
-        QColor badgeColor = networkStyle->getBadgeColor();
-        pixPaint.fillRect(badgeRect, badgeColor);
+        pixPaint.fillRect(badgeRect, networkStyle->getBadgeColor());
         // Draw the text itself using white color, regardless of the current theme
         pixPaint.setPen(QColor(255, 255, 255));
         pixPaint.drawText(width - titleAddTextWidth - 10, paddingTop + 10, titleAddText);
@@ -166,16 +166,6 @@ bool SplashScreen::eventFilter(QObject * obj, QEvent * ev) {
     return QObject::eventFilter(obj, ev);
 }
 
-void SplashScreen::finish()
-{
-    /* If the window is minimized, hide() will be ignored. */
-    /* Make sure we de-minimize the splashscreen window before hiding */
-    if (isMinimized())
-        showNormal();
-    hide();
-    deleteLater(); // No more need for this
-}
-
 static void InitMessage(SplashScreen *splash, const std::string &message)
 {
     bool invoked = QMetaObject::invokeMethod(splash, "showMessage",
@@ -189,8 +179,8 @@ static void InitMessage(SplashScreen *splash, const std::string &message)
 static void ShowProgress(SplashScreen *splash, const std::string &title, int nProgress, bool resume_possible)
 {
     InitMessage(splash, title + std::string("\n") +
-            (resume_possible ? _("(press q to shutdown and continue later)").translated
-                                : _("press q to shutdown").translated) +
+            (resume_possible ? SplashScreen::tr("(press q to shutdown and continue later)").toStdString()
+                                : SplashScreen::tr("press q to shutdown").toStdString()) +
             strprintf("\n%d", nProgress) + "%");
 }
 
@@ -199,6 +189,7 @@ void SplashScreen::subscribeToCoreSignals()
     // Connect signals to client
     m_handler_init_message = m_node->handleInitMessage(std::bind(InitMessage, this, std::placeholders::_1));
     m_handler_show_progress = m_node->handleShowProgress(std::bind(ShowProgress, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+    m_handler_init_wallet = m_node->handleInitWallet([this]() { handleLoadWallet(); });
 }
 
 void SplashScreen::handleLoadWallet()

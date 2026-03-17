@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Copyright (c) 2019-2020 The Bitcoin Core developers
+# Copyright (c) 2019-2021 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -25,8 +25,7 @@ export JOB_NUMBER=${JOB_NUMBER:-1}
 
 echo "Fallback to default values in env (if not yet set)"
 # The number of parallel jobs to pass down to make and test_runner.py
-MAKEJOBS="-j$(nproc)"
-export MAKEJOBS
+export MAKEJOBS=${MAKEJOBS:--j$(nproc)}
 # A folder for the ci system to put temporary files (ccache, datadirs for tests, ...)
 # This folder only exists on the ci host.
 export BASE_SCRATCH_DIR=${BASE_SCRATCH_DIR:-$BASE_ROOT_DIR/ci/scratch}
@@ -39,15 +38,12 @@ export USE_BUSY_BOX=${USE_BUSY_BOX:-false}
 
 export RUN_UNIT_TESTS=${RUN_UNIT_TESTS:-true}
 export RUN_FUNCTIONAL_TESTS=${RUN_FUNCTIONAL_TESTS:-true}
-export RUN_SECURITY_TESTS=${RUN_SECURITY_TESTS:-false}
+export RUN_TIDY=${RUN_TIDY:-false}
 # By how much to scale the test_runner timeouts (option --timeout-factor).
 # This is needed because some ci machines have slow CPU or disk, so sanitizers
 # might be slow or a reindex might be waiting on disk IO.
 export TEST_RUNNER_TIMEOUT_FACTOR=${TEST_RUNNER_TIMEOUT_FACTOR:-4}
-export TEST_RUNNER_ENV=${TEST_RUNNER_ENV:-}
 export RUN_FUZZ_TESTS=${RUN_FUZZ_TESTS:-false}
-export RUN_SYMBOL_TESTS=${RUN_SYMBOL_TESTS:-false}
-export EXPECTED_TESTS_DURATION_IN_SECONDS=${EXPECTED_TESTS_DURATION_IN_SECONDS:-1000}
 
 export CONTAINER_NAME=${CONTAINER_NAME:-ci_unnamed}
 export DOCKER_NAME_TAG=${DOCKER_NAME_TAG:-ubuntu:20.04}
@@ -58,12 +54,15 @@ export BOOST_TEST_RANDOM=${BOOST_TEST_RANDOM:-1}
 export DEBIAN_FRONTEND=noninteractive
 export HOST_CACHE_DIR=${HOST_CACHE_DIR:-$BASE_ROOT_DIR/ci-cache-$BUILD_TARGET}
 export CACHE_DIR=${CACHE_DIR:-$HOST_CACHE_DIR}
-export CCACHE_SIZE=${CCACHE_SIZE:-100M}
+export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-100M}
 export CCACHE_TEMPDIR=${CCACHE_TEMPDIR:-/tmp/.ccache-temp}
 export CCACHE_COMPRESS=${CCACHE_COMPRESS:-1}
 # The cache dir.
 # This folder exists on the ci host and ci guest. Changes are propagated back and forth.
 export CCACHE_DIR=${CCACHE_DIR:-$CACHE_DIR/ccache}
+# ctcache (clang-tidy cache) configuration
+export CTCACHE_DIR=${CTCACHE_DIR:-$CACHE_DIR/ctcache}
+export CTCACHE_MAXSIZE_MB=${CTCACHE_MAXSIZE_MB:-50}
 # The depends dir.
 # This folder exists on the ci host and ci guest. Changes are propagated back and forth.
 export DEPENDS_DIR=${DEPENDS_DIR:-$BASE_ROOT_DIR/depends}

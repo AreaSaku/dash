@@ -1,4 +1,4 @@
-// Copyright (c) 2021-2024 The Dash Core developers
+// Copyright (c) 2021-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -37,7 +37,7 @@ enum class LLMQType : uint8_t {
     LLMQ_TEST_PLATFORM = 106,    // 3 members, 2 (66%) threshold, one per hour.
 
     // for devnets only. rotated version (v2) for devnets
-    LLMQ_DEVNET_DIP0024 = 105 // 8 members, 4 (50%) threshold, one per hour. Params might differ when -llmqdevnetparams is used
+    LLMQ_DEVNET_DIP0024 = 105, // 8 members, 4 (50%) threshold, one per hour. Params might differ when -llmqdevnetparams is used
 };
 
 // Configures a LLMQ and its DKG
@@ -54,7 +54,7 @@ struct LLMQParams {
     // the size of the quorum, e.g. 50 or 400
     int size;
 
-    // The minimum number of valid members after the DKK. If less members are determined valid, no commitment can be
+    // The minimum number of valid members after the DKG. If less members are determined valid, no commitment can be
     // created. Should be higher then the threshold to allow some room for failing nodes, otherwise quorum might end up
     // not being able to ever created a recovered signature if more nodes fail after the DKG
     int minSize;
@@ -114,17 +114,14 @@ struct LLMQParams {
     // How many members should we try to send all sigShares to before we give up.
     int recoveryMembers;
 public:
-
-    [[ nodiscard ]] constexpr int max_cycles(int quorums_count) const
+    [[nodiscard]] constexpr int max_cycles(int quorums_count) const
     {
         return useRotation ? quorums_count / signingActiveQuorumCount : quorums_count;
     }
 
     // For how many blocks recent DKG info should be kept
-    [[ nodiscard ]] constexpr int max_store_depth() const
-    {
-        return max_cycles(keepOldKeys) * dkgInterval;
-    }
+    [[nodiscard]] constexpr int max_store_depth() const { return max_cycles(keepOldKeys) * dkgInterval; }
+    [[nodiscard]] constexpr bool is_single_member() const { return size == 1; }
 };
 
 //static_assert(std::is_trivial_v<Consensus::LLMQParams>, "LLMQParams is not a trivial type");

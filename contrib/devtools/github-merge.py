@@ -174,7 +174,7 @@ def get_acks_from_comments(head_commit, comments):
     acks = []
     for c in comments:
         review = [l for l in c['body'].split('\r\n') if 'ACK' in l and head_abbrev in l]
-        if review:
+        if review and 'coderabbit' not in c['user']['login']:
             acks.append((c['user']['login'], review[0]))
     return acks
 
@@ -306,7 +306,7 @@ def main():
                 print(range_diff_output.decode('utf-8'))
             try:
                 subprocess.check_call([GIT,'log','--graph','--topo-order','--pretty=format:'+COMMIT_FORMAT])
-            except:
+            except Exception:
                 pass
             review_reply = ask_prompt("Do you want to continue with force push? Type 'yes' to continue or anything else to abort.").lower()
             if review_reply != 'yes':

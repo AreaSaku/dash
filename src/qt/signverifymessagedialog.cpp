@@ -1,5 +1,5 @@
-// Copyright (c) 2011-2020 The Bitcoin Core developers
-// Copyright (c) 2014-2023 The Dash Core developers
+// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2014-2025 The Dash Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,6 +8,7 @@
 
 #include <qt/addressbookpage.h>
 #include <qt/guiutil.h>
+#include <qt/guiutil_font.h>
 #include <qt/walletmodel.h>
 
 #include <key_io.h>
@@ -22,9 +23,7 @@
 
 SignVerifyMessageDialog::SignVerifyMessageDialog(QWidget* parent) :
     QDialog(parent, GUIUtil::dialog_flags),
-    ui(new Ui::SignVerifyMessageDialog),
-    model(nullptr),
-    pageButtons(nullptr)
+    ui(new Ui::SignVerifyMessageDialog)
 {
     ui->setupUi(this);
 
@@ -53,9 +52,9 @@ SignVerifyMessageDialog::SignVerifyMessageDialog(QWidget* parent) :
     ui->messageIn_VM->installEventFilter(this);
     ui->signatureIn_VM->installEventFilter(this);
 
-    GUIUtil::setFont({ui->signatureOut_SM, ui->signatureIn_VM}, GUIUtil::FontWeight::Normal, 11, true);
-    GUIUtil::setFont({ui->signatureLabel_SM}, GUIUtil::FontWeight::Bold, 16);
-    GUIUtil::setFont({ui->statusLabel_SM, ui->statusLabel_VM}, GUIUtil::FontWeight::Bold);
+    GUIUtil::setFont({ui->signatureOut_SM, ui->signatureIn_VM}, {GUIUtil::FontWeight::Normal, 11, true});
+    GUIUtil::setFont({ui->signatureLabel_SM}, {GUIUtil::FontWeight::Bold, 16});
+    GUIUtil::setFont({ui->statusLabel_SM, ui->statusLabel_VM}, {GUIUtil::FontWeight::Bold});
 
     GUIUtil::updateFonts();
 
@@ -111,8 +110,8 @@ void SignVerifyMessageDialog::showPage(int index)
         }
     }
 
-    GUIUtil::setFont({btnActive}, GUIUtil::FontWeight::Bold, 16);
-    GUIUtil::setFont(vecNormal, GUIUtil::FontWeight::Normal, 16);
+    GUIUtil::setFont({btnActive}, {GUIUtil::FontWeight::Bold, 16});
+    GUIUtil::setFont(vecNormal, {GUIUtil::FontWeight::Normal, 16});
     GUIUtil::updateFonts();
 
     ui->stackedWidgetSig->setCurrentIndex(index);

@@ -8,10 +8,8 @@
 #include <qt/bitcoinunits.h>
 #include <qt/guiconstants.h>
 #include <qt/guiutil.h>
+#include <qt/guiutil_font.h>
 #include <qt/qrimagewidget.h>
-
-#include <QPainter>
-#include <QPixmap>
 
 #if defined(HAVE_CONFIG_H)
 #include <config/bitcoin-config.h> /* for USE_QRCODE */
@@ -23,7 +21,7 @@ QRDialog::QRDialog(QWidget *parent) :
 {
     ui->setupUi(this);
 
-    GUIUtil::setFont({ui->labelQRCodeTitle}, GUIUtil::FontWeight::Bold, 16);
+    GUIUtil::setFont({ui->labelQRCodeTitle}, {GUIUtil::FontWeight::Bold, 16});
 
     GUIUtil::updateFonts();
 

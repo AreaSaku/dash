@@ -3,7 +3,9 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <net_processing.h>
+#include <netaddress.h>
 #include <netmessagemaker.h>
+#include <pubkey.h>
 #include <test/fuzz/util.h>
 #include <test/util/script.h>
 #include <util/overflow.h>
@@ -13,7 +15,7 @@
 #include <memory>
 
 FuzzedSock::FuzzedSock(FuzzedDataProvider& fuzzed_data_provider)
-    : m_fuzzed_data_provider{fuzzed_data_provider}
+    : m_fuzzed_data_provider{fuzzed_data_provider}, m_selectable{fuzzed_data_provider.ConsumeBool()}
 {
     m_socket = fuzzed_data_provider.ConsumeIntegralInRange<SOCKET>(INVALID_SOCKET - 1, INVALID_SOCKET);
 }
@@ -21,21 +23,16 @@ FuzzedSock::FuzzedSock(FuzzedDataProvider& fuzzed_data_provider)
 FuzzedSock::~FuzzedSock()
 {
     // Sock::~Sock() will be called after FuzzedSock::~FuzzedSock() and it will call
-    // Sock::Reset() (not FuzzedSock::Reset()!) which will call CloseSocket(m_socket).
+    // close(m_socket) if m_socket is not INVALID_SOCKET.
     // Avoid closing an arbitrary file descriptor (m_socket is just a random very high number which
     // theoretically may concide with a real opened file descriptor).
-    Reset();
+    m_socket = INVALID_SOCKET;
 }
 
 FuzzedSock& FuzzedSock::operator=(Sock&& other)
 {
     assert(false && "Move of Sock into FuzzedSock not allowed.");
     return *this;
-}
-
-void FuzzedSock::Reset()
-{
-    m_socket = INVALID_SOCKET;
 }
 
 ssize_t FuzzedSock::Send(const void* data, size_t len, int flags) const
@@ -256,7 +253,25 @@ int FuzzedSock::GetSockName(sockaddr* name, socklen_t* name_len) const
     return 0;
 }
 
-bool FuzzedSock::Wait(std::chrono::milliseconds timeout, Event requested, Event* occurred) const
+bool FuzzedSock::SetNonBlocking() const
+{
+    constexpr std::array setnonblocking_errnos{
+        EBADF,
+        EPERM,
+    };
+    if (m_fuzzed_data_provider.ConsumeBool()) {
+        SetFuzzedErrNo(m_fuzzed_data_provider, setnonblocking_errnos);
+        return false;
+    }
+    return true;
+}
+
+bool FuzzedSock::IsSelectable(bool is_select) const
+{
+    return m_selectable;
+}
+
+bool FuzzedSock::Wait(std::chrono::milliseconds timeout, Event requested, SocketEventsParams event_params, Event* occurred) const
 {
     constexpr std::array wait_errnos{
         EBADF,
@@ -269,6 +284,15 @@ bool FuzzedSock::Wait(std::chrono::milliseconds timeout, Event requested, Event*
     }
     if (occurred != nullptr) {
         *occurred = m_fuzzed_data_provider.ConsumeBool() ? requested : 0;
+    }
+    return true;
+}
+
+bool FuzzedSock::WaitMany(std::chrono::milliseconds timeout, EventsPerSock& events_per_sock, SocketEventsParams event_params) const
+{
+    for (auto& [sock, events] : events_per_sock) {
+        (void)sock;
+        events.occurred = m_fuzzed_data_provider.ConsumeBool() ? events.requested : 0;
     }
     return true;
 }
@@ -287,16 +311,21 @@ void FillNode(FuzzedDataProvider& fuzzed_data_provider, ConnmanTestMsg& connman,
     connman.Handshake(node,
                       /*successfully_connected=*/fuzzed_data_provider.ConsumeBool(),
                       /*remote_services=*/ConsumeWeakEnum(fuzzed_data_provider, ALL_SERVICE_FLAGS),
-                      /*permission_flags=*/ConsumeWeakEnum(fuzzed_data_provider, ALL_NET_PERMISSION_FLAGS),
+                      /*local_services=*/ConsumeWeakEnum(fuzzed_data_provider, ALL_SERVICE_FLAGS),
                       /*version=*/fuzzed_data_provider.ConsumeIntegralInRange<int32_t>(MIN_PEER_PROTO_VERSION, std::numeric_limits<int32_t>::max()),
                       /*relay_txs=*/fuzzed_data_provider.ConsumeBool());
+}
+
+CAmount ConsumeMoney(FuzzedDataProvider& fuzzed_data_provider, const std::optional<CAmount>& max) noexcept
+{
+    return fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(0, max.value_or(MAX_MONEY));
 }
 
 int64_t ConsumeTime(FuzzedDataProvider& fuzzed_data_provider, const std::optional<int64_t>& min, const std::optional<int64_t>& max) noexcept
 {
     // Avoid t=0 (1970-01-01T00:00:00Z) since SetMockTime(0) disables mocktime.
-    static const int64_t time_min{ParseISO8601DateTime("2000-01-01T00:00:01Z")};
-    static const int64_t time_max{ParseISO8601DateTime("2100-12-31T23:59:59Z")};
+    static const int64_t time_min{946684801}; // 2000-01-01T00:00:01Z
+    static const int64_t time_max{4133980799}; // 2100-12-31T23:59:59Z
     return fuzzed_data_provider.ConsumeIntegralInRange<int64_t>(min.value_or(time_min), max.value_or(time_max));
 }
 
@@ -325,16 +354,76 @@ CMutableTransaction ConsumeTransaction(FuzzedDataProvider& fuzzed_data_provider,
     }
     for (int i = 0; i < num_out; ++i) {
         const auto amount = fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(-10, 50 * COIN + 10);
-        const auto script_pk = ConsumeScript(fuzzed_data_provider, /* max_length */ 128);
+        const auto script_pk = ConsumeScript(fuzzed_data_provider);
         tx_mut.vout.emplace_back(amount, script_pk);
     }
     return tx_mut;
 }
 
-CScript ConsumeScript(FuzzedDataProvider& fuzzed_data_provider, const std::optional<size_t>& max_length) noexcept
+CScript ConsumeScript(FuzzedDataProvider& fuzzed_data_provider) noexcept
 {
-    const std::vector<uint8_t> b = ConsumeRandomLengthByteVector(fuzzed_data_provider, max_length);
-    return {b.begin(), b.end()};
+    CScript r_script{};
+    {
+        // Keep a buffer of bytes to allow the fuzz engine to produce smaller
+        // inputs to generate CScripts with repeated data.
+        static constexpr unsigned MAX_BUFFER_SZ{128};
+        std::vector<uint8_t> buffer(MAX_BUFFER_SZ, uint8_t{'a'});
+        while (fuzzed_data_provider.ConsumeBool()) {
+            CallOneOf(
+                fuzzed_data_provider,
+                [&] {
+                    // Insert byte vector directly to allow malformed or unparsable scripts
+                    r_script.insert(r_script.end(), buffer.begin(), buffer.begin() + fuzzed_data_provider.ConsumeIntegralInRange(0U, MAX_BUFFER_SZ));
+                },
+                [&] {
+                    // Push a byte vector from the buffer
+                    r_script << std::vector<uint8_t>{buffer.begin(), buffer.begin() + fuzzed_data_provider.ConsumeIntegralInRange(0U, MAX_BUFFER_SZ)};
+                },
+                [&] {
+                    // Push multisig
+                    // There is a special case for this to aid the fuzz engine
+                    // navigate the highly structured multisig format.
+                    r_script << fuzzed_data_provider.ConsumeIntegralInRange<int64_t>(0, 22);
+                    int num_data{fuzzed_data_provider.ConsumeIntegralInRange(1, 22)};
+                    std::vector<uint8_t> pubkey_comp{buffer.begin(), buffer.begin() + CPubKey::COMPRESSED_SIZE};
+                    pubkey_comp.front() = fuzzed_data_provider.ConsumeIntegralInRange(2, 3); // Set first byte for GetLen() to pass
+                    std::vector<uint8_t> pubkey_uncomp{buffer.begin(), buffer.begin() + CPubKey::SIZE};
+                    pubkey_uncomp.front() = fuzzed_data_provider.ConsumeIntegralInRange(4, 7); // Set first byte for GetLen() to pass
+                    while (num_data--) {
+                        auto& pubkey{fuzzed_data_provider.ConsumeBool() ? pubkey_uncomp : pubkey_comp};
+                        if (fuzzed_data_provider.ConsumeBool()) {
+                            pubkey.back() = num_data; // Make each pubkey different
+                        }
+                        r_script << pubkey;
+                    }
+                    r_script << fuzzed_data_provider.ConsumeIntegralInRange<int64_t>(0, 22);
+                },
+                [&] {
+                    // Mutate the buffer
+                    const auto vec{ConsumeRandomLengthByteVector(fuzzed_data_provider, /*max_length=*/MAX_BUFFER_SZ)};
+                    std::copy(vec.begin(), vec.end(), buffer.begin());
+                },
+                [&] {
+                    // Push an integral
+                    r_script << fuzzed_data_provider.ConsumeIntegral<int64_t>();
+                },
+                [&] {
+                    // Push an opcode
+                    r_script << ConsumeOpcodeType(fuzzed_data_provider);
+                },
+                [&] {
+                    // Push a scriptnum
+                    r_script << ConsumeScriptNum(fuzzed_data_provider);
+                });
+        }
+    }
+    if (fuzzed_data_provider.ConsumeBool()) {
+        uint256 script_hash;
+        CSHA256().Write(r_script.data(), r_script.size()).Finalize(script_hash.begin());
+        r_script.clear();
+        r_script << OP_0 << ToByteVector(script_hash);
+    }
+    return r_script;
 }
 
 uint32_t ConsumeSequence(FuzzedDataProvider& fuzzed_data_provider) noexcept
@@ -342,7 +431,174 @@ uint32_t ConsumeSequence(FuzzedDataProvider& fuzzed_data_provider) noexcept
     return fuzzed_data_provider.ConsumeBool() ?
                fuzzed_data_provider.PickValueInArray({
                    CTxIn::SEQUENCE_FINAL,
-                   CTxIn::SEQUENCE_FINAL - 1
+                   CTxIn::MAX_SEQUENCE_NONFINAL,
                }) :
                fuzzed_data_provider.ConsumeIntegral<uint32_t>();
+}
+
+CTxDestination ConsumeTxDestination(FuzzedDataProvider& fuzzed_data_provider) noexcept
+{
+    CTxDestination tx_destination;
+    const size_t call_size{CallOneOf(
+        fuzzed_data_provider,
+        [&] {
+            tx_destination = CNoDestination{};
+        },
+        [&] {
+            tx_destination = PKHash{ConsumeUInt160(fuzzed_data_provider)};
+        },
+        [&] {
+            tx_destination = ScriptHash{ConsumeUInt160(fuzzed_data_provider)};
+        })};
+    Assert(call_size == std::variant_size_v<CTxDestination>);
+    return tx_destination;
+}
+
+CKey ConsumePrivateKey(FuzzedDataProvider& fuzzed_data_provider, std::optional<bool> compressed) noexcept
+{
+    auto key_data = fuzzed_data_provider.ConsumeBytes<uint8_t>(32);
+    key_data.resize(32);
+    CKey key;
+    bool compressed_value = compressed ? *compressed : fuzzed_data_provider.ConsumeBool();
+    key.Set(key_data.begin(), key_data.end(), compressed_value);
+    return key;
+}
+
+CTxMemPoolEntry ConsumeTxMemPoolEntry(FuzzedDataProvider& fuzzed_data_provider, const CTransaction& tx) noexcept
+{
+    // Avoid:
+    // policy/feerate.cpp:28:34: runtime error: signed integer overflow: 34873208148477500 * 1000 cannot be represented in type 'long'
+    //
+    // Reproduce using CFeeRate(348732081484775, 10).GetFeePerK()
+    const CAmount fee = std::min<CAmount>(ConsumeMoney(fuzzed_data_provider), std::numeric_limits<CAmount>::max() / static_cast<CAmount>(100000));
+    assert(MoneyRange(fee));
+    const int64_t time = fuzzed_data_provider.ConsumeIntegral<int64_t>();
+    const unsigned int entry_height = fuzzed_data_provider.ConsumeIntegral<unsigned int>();
+    const bool spends_coinbase = fuzzed_data_provider.ConsumeBool();
+    const bool dip1_status = fuzzed_data_provider.ConsumeBool();
+    const unsigned int sig_op_cost = fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(0, MaxBlockSigOps(dip1_status));
+    return CTxMemPoolEntry{MakeTransactionRef(tx), fee, time, entry_height, spends_coinbase, sig_op_cost, {}};
+}
+
+bool ContainsSpentInput(const CTransaction& tx, const CCoinsViewCache& inputs) noexcept
+{
+    for (const CTxIn& tx_in : tx.vin) {
+        const Coin& coin = inputs.AccessCoin(tx_in.prevout);
+        if (coin.IsSpent()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+CAddress ConsumeAddress(FuzzedDataProvider& fuzzed_data_provider) noexcept
+{
+    return {ConsumeService(fuzzed_data_provider), ConsumeWeakEnum(fuzzed_data_provider, ALL_SERVICE_FLAGS), NodeSeconds{std::chrono::seconds{fuzzed_data_provider.ConsumeIntegral<uint32_t>()}}};
+}
+
+FILE* FuzzedFileProvider::open()
+{
+    SetFuzzedErrNo(m_fuzzed_data_provider);
+    if (m_fuzzed_data_provider.ConsumeBool()) {
+        return nullptr;
+    }
+    std::string mode;
+    CallOneOf(
+        m_fuzzed_data_provider,
+        [&] {
+            mode = "r";
+        },
+        [&] {
+            mode = "r+";
+        },
+        [&] {
+            mode = "w";
+        },
+        [&] {
+            mode = "w+";
+        },
+        [&] {
+            mode = "a";
+        },
+        [&] {
+            mode = "a+";
+        });
+#if defined _GNU_SOURCE && (defined(__linux__) || defined(__FreeBSD__))
+    const cookie_io_functions_t io_hooks = {
+        FuzzedFileProvider::read,
+        FuzzedFileProvider::write,
+        FuzzedFileProvider::seek,
+        FuzzedFileProvider::close,
+    };
+    return fopencookie(this, mode.c_str(), io_hooks);
+#else
+    (void)mode;
+    return nullptr;
+#endif
+}
+
+ssize_t FuzzedFileProvider::read(void* cookie, char* buf, size_t size)
+{
+    FuzzedFileProvider* fuzzed_file = (FuzzedFileProvider*)cookie;
+    SetFuzzedErrNo(fuzzed_file->m_fuzzed_data_provider);
+    if (buf == nullptr || size == 0 || fuzzed_file->m_fuzzed_data_provider.ConsumeBool()) {
+        return fuzzed_file->m_fuzzed_data_provider.ConsumeBool() ? 0 : -1;
+    }
+    const std::vector<uint8_t> random_bytes = fuzzed_file->m_fuzzed_data_provider.ConsumeBytes<uint8_t>(size);
+    if (random_bytes.empty()) {
+        return 0;
+    }
+    std::memcpy(buf, random_bytes.data(), random_bytes.size());
+    if (AdditionOverflow(fuzzed_file->m_offset, (int64_t)random_bytes.size())) {
+        return fuzzed_file->m_fuzzed_data_provider.ConsumeBool() ? 0 : -1;
+    }
+    fuzzed_file->m_offset += random_bytes.size();
+    return random_bytes.size();
+}
+
+ssize_t FuzzedFileProvider::write(void* cookie, const char* buf, size_t size)
+{
+    FuzzedFileProvider* fuzzed_file = (FuzzedFileProvider*)cookie;
+    SetFuzzedErrNo(fuzzed_file->m_fuzzed_data_provider);
+    const ssize_t n = fuzzed_file->m_fuzzed_data_provider.ConsumeIntegralInRange<ssize_t>(0, size);
+    if (AdditionOverflow(fuzzed_file->m_offset, (int64_t)n)) {
+        return 0;
+    }
+    fuzzed_file->m_offset += n;
+    return n;
+}
+
+int FuzzedFileProvider::seek(void* cookie, int64_t* offset, int whence)
+{
+    assert(whence == SEEK_SET || whence == SEEK_CUR || whence == SEEK_END);
+    FuzzedFileProvider* fuzzed_file = (FuzzedFileProvider*)cookie;
+    SetFuzzedErrNo(fuzzed_file->m_fuzzed_data_provider);
+    int64_t new_offset = 0;
+    if (whence == SEEK_SET) {
+        new_offset = *offset;
+    } else if (whence == SEEK_CUR) {
+        if (AdditionOverflow(fuzzed_file->m_offset, *offset)) {
+            return -1;
+        }
+        new_offset = fuzzed_file->m_offset + *offset;
+    } else if (whence == SEEK_END) {
+        const int64_t n = fuzzed_file->m_fuzzed_data_provider.ConsumeIntegralInRange<int64_t>(0, 4096);
+        if (AdditionOverflow(n, *offset)) {
+            return -1;
+        }
+        new_offset = n + *offset;
+    }
+    if (new_offset < 0) {
+        return -1;
+    }
+    fuzzed_file->m_offset = new_offset;
+    *offset = new_offset;
+    return fuzzed_file->m_fuzzed_data_provider.ConsumeIntegralInRange<int>(-1, 0);
+}
+
+int FuzzedFileProvider::close(void* cookie)
+{
+    FuzzedFileProvider* fuzzed_file = (FuzzedFileProvider*)cookie;
+    SetFuzzedErrNo(fuzzed_file->m_fuzzed_data_provider);
+    return fuzzed_file->m_fuzzed_data_provider.ConsumeIntegralInRange<int>(-1, 0);
 }

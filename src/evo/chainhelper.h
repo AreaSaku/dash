@@ -1,4 +1,4 @@
-// Copyright (c) 2024 The Dash Core developers
+// Copyright (c) 2024-2025 The Dash Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,39 +6,80 @@
 #define BITCOIN_EVO_CHAINHELPER_H
 
 #include <memory>
+#include <optional>
+#include <unordered_map>
 
+class CBlockIndex;
 class CCreditPoolManager;
 class CDeterministicMNManager;
+class CEvoDB;
+class CGovernanceManager;
 class ChainstateManager;
+class CMasternodeSync;
 class CMNHFManager;
 class CMNPaymentsProcessor;
-class CMasternodeSync;
-class CGovernanceManager;
 class CSpecialTxProcessor;
 class CSporkManager;
-
-namespace Consensus { struct Params; }
+class CTransaction;
+class uint256;
+struct CCreditPool;
+namespace chainlock {
+class Chainlocks;
+} // namespace chainlock
+namespace Consensus {
+struct Params;
+} // namespace Consensus
 namespace llmq {
-class CChainLocksHandler;
+class CInstantSendManager;
 class CQuorumBlockProcessor;
 class CQuorumManager;
-}
+class CQuorumSnapshotManager;
+} // namespace llmq
+namespace node {
+class BlockAssembler;
+} // namespace node
 
 class CChainstateHelper
 {
+    friend class node::BlockAssembler;
+
+private:
+    llmq::CInstantSendManager& isman;
+    const std::unique_ptr<CCreditPoolManager> credit_pool_manager;
+
 public:
-    explicit CChainstateHelper(CCreditPoolManager& cpoolman, CDeterministicMNManager& dmnman, CMNHFManager& mnhfman, CGovernanceManager& govman,
-                               llmq::CQuorumBlockProcessor& qblockman, const ChainstateManager& chainman, const Consensus::Params& consensus_params,
-                               const CMasternodeSync& mn_sync, const CSporkManager& sporkman, const llmq::CChainLocksHandler& clhandler,
+    const chainlock::Chainlocks& m_chainlocks;
+    const std::unique_ptr<CMNHFManager> ehf_manager;
+    const std::unique_ptr<CMNPaymentsProcessor> mn_payments;
+    const std::unique_ptr<CSpecialTxProcessor> special_tx;
+
+public:
+    CChainstateHelper() = delete;
+    CChainstateHelper(const CChainstateHelper&) = delete;
+    CChainstateHelper& operator=(const CChainstateHelper&) = delete;
+    explicit CChainstateHelper(CEvoDB& evodb, CDeterministicMNManager& dmnman, CGovernanceManager& govman,
+                               llmq::CInstantSendManager& isman, llmq::CQuorumBlockProcessor& qblockman,
+                               llmq::CQuorumSnapshotManager& qsnapman, const ChainstateManager& chainman,
+                               const Consensus::Params& consensus_params, const CMasternodeSync& mn_sync,
+                               const CSporkManager& sporkman, const chainlock::Chainlocks& chainlocks,
                                const llmq::CQuorumManager& qman);
     ~CChainstateHelper();
 
-    CChainstateHelper() = delete;
-    CChainstateHelper(const CChainstateHelper&) = delete;
+    /** Passthrough functions to chainlock::Chainlocks */
+    bool HasConflictingChainLock(int nHeight, const uint256& blockHash) const;
+    bool HasChainLock(int nHeight, const uint256& blockHash) const;
+    int32_t GetBestChainLockHeight() const;
 
-public:
-    const std::unique_ptr<CMNPaymentsProcessor> mn_payments;
-    const std::unique_ptr<CSpecialTxProcessor> special_tx;
+    /** Passthrough functions to CCreditPoolManager */
+    CCreditPool GetCreditPool(const CBlockIndex* const pindex);
+
+    /** Passthrough functions to CInstantSendManager */
+    std::optional<std::pair</*islock_hash=*/uint256, /*txid=*/uint256>> ConflictingISLockIfAny(const CTransaction& tx) const;
+    bool IsInstantSendWaitingForTx(const uint256& hash) const;
+    bool RemoveConflictingISLockByTx(const CTransaction& tx);
+    bool ShouldInstantSendRejectConflicts() const;
+
+    std::unordered_map<uint8_t, int> GetSignalsStage(const CBlockIndex* const pindexPrev);
 };
 
 #endif // BITCOIN_EVO_CHAINHELPER_H

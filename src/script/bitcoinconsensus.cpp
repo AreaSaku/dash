@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2015 The Bitcoin Core developers
+// Copyright (c) 2009-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -48,7 +48,7 @@ public:
         return *this;
     }
 
-    int GetVersion() const { return m_version; }
+    [[maybe_unused]] int GetVersion() const { return m_version; }
 private:
     const int m_version;
     const unsigned char* m_data;
@@ -90,7 +90,7 @@ int dashconsensus_verify_script(const unsigned char *scriptPubKey, unsigned int 
 
         PrecomputedTransactionData txdata(tx);
 		CAmount am(0);
-        return VerifyScript(tx.vin[nIn].scriptSig, CScript(scriptPubKey, scriptPubKey + scriptPubKeyLen), flags, TransactionSignatureChecker(&tx, nIn, am, txdata), nullptr);
+        return VerifyScript(tx.vin[nIn].scriptSig, CScript(scriptPubKey, scriptPubKey + scriptPubKeyLen), flags, TransactionSignatureChecker(&tx, nIn, am, txdata, MissingDataBehavior::FAIL), nullptr);
     } catch (const std::exception&) {
         return set_error(err, dashconsensus_ERR_TX_DESERIALIZE); // Error deserializing
     }
